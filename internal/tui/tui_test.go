@@ -162,6 +162,11 @@ func TestFoundMatchIsProminent(t *testing.T) {
 		}
 	}
 	cancel()
+	// Wait for Run to actually return (it now blocks until the engine's own
+	// goroutines have fully stopped) before the test ends and t.TempDir's
+	// cleanup runs — otherwise the engine can still be writing when cleanup
+	// starts, which showed up as an intermittent "directory not empty".
+	<-r.Done()
 
 	m := New(r, func() {})
 	updated, _ := m.Update(tickMsg(time.Now()))
