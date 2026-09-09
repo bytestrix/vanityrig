@@ -8,7 +8,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -142,21 +141,17 @@ func run(args []string) int {
 }
 
 // runWizard is what a bare `vanityrig` runs into a real terminal: a short
-// guided setup (word, then where to save keys) that hands off into the same
-// mode-comparison flow as the command-line form, rather than requiring anyone
-// to already know the flags before they can use the tool.
+// guided setup (word, then where to save keys) using real form fields —
+// text boxes and a select list — rather than typed answers, then it hands off
+// into the same mode-comparison flow as the command-line form.
 func runWizard() int {
 	fmt.Println("VanityRig — find a vanity .onion address")
 	fmt.Println()
 
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("Word to search for (space-separated words = match any one of them): ")
-	line, _ := reader.ReadString('\n')
-	patterns := strings.Fields(line)
-	if len(patterns) == 0 {
-		fmt.Println("No word given — nothing to do.")
-		return 2
+	patterns, ok := askWord()
+	if !ok {
+		fmt.Println("Cancelled.")
+		return 0
 	}
 
 	var malformed bool
@@ -170,9 +165,11 @@ func runWizard() int {
 		return 2
 	}
 
-	fmt.Print("Save found keys to [~/.vanityrig/keys]: ")
-	outLine, _ := reader.ReadString('\n')
-	out := strings.TrimSpace(outLine)
+	out, ok := askOutputDir()
+	if !ok {
+		fmt.Println("Cancelled.")
+		return 0
+	}
 
 	return runCompare(patterns, 22.2e6, 0, out, 0, false, "", false, false)
 }
@@ -194,7 +191,11 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 
 	chosen := cmp.Best
 	if !yes {
-		m, ok := promptMode(cmp.Best)
+		if !isInputTerminal() {
+			fmt.Println("Not running non-interactively without -y.")
+			return 0
+		}
+		m, ok := askMode(cmp)
 		if !ok {
 			fmt.Println("Not starting.")
 			return 0
@@ -210,7 +211,7 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 
 	needsConfirm := est.Verdict == vanity.VerdictExpensive ||
 		est.Verdict == vanity.VerdictHard || est.Verdict == vanity.VerdictInfeasible
-	if !yes && needsConfirm && !confirm(est.Verdict) {
+	if !yes && needsConfirm && !askProceed(est.Verdict) {
 		fmt.Println("Not starting. Run again with -y to skip this prompt next time.")
 		return 0
 	}
@@ -218,56 +219,18 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 	return startSearch(patterns, chosen, threads, out, stopAfter, plain, enginePath)
 }
 
-// promptMode asks which match mode to search, defaulting to the recommended
-// one. Non-interactive input never guesses — it requires -y instead.
-func promptMode(recommended vanity.MatchMode) (vanity.MatchMode, bool) {
-	if !isInputTerminal() {
-		fmt.Println("Not running non-interactively without -y.")
-		return "", false
-	}
-
-	fmt.Printf("Search in which mode? [prefix/suffix/anywhere] (default %s, n to cancel): ", recommended)
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-
-	switch line {
-	case "":
-		return recommended, true
-	case "n", "no":
-		return "", false
-	default:
-		m, err := vanity.ParseMatchMode(line)
-		if err != nil {
-			fmt.Println("error:", err)
-			return "", false
-		}
-		return m, true
-	}
-}
-
 // confirm asks whether to proceed, defaulting to yes for anything ordinary and
 // to no for anything that will tie up hardware for a long time. Non-interactive
 // input (piped, scripted) never guesses — it requires -y instead.
 func confirm(v vanity.Verdict) bool {
-	defaultYes := v == vanity.VerdictTrivial || v == vanity.VerdictReasonable
-
 	if !isInputTerminal() {
 		fmt.Println("Not running non-interactively without -y.")
 		return false
 	}
-
-	if defaultYes {
-		fmt.Print("Start the search now? [Y/n]: ")
-	} else {
-		fmt.Print("This will take a long time. Start anyway? [y/N]: ")
+	if v == vanity.VerdictExpensive || v == vanity.VerdictHard || v == vanity.VerdictInfeasible {
+		return askProceed(v)
 	}
-
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	if line == "" {
-		return defaultYes
-	}
-	return line == "y" || line == "yes"
+	return askStart()
 }
 
 // isInputTerminal reports whether stdin is an interactive terminal, so a

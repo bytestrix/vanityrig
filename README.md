@@ -55,31 +55,10 @@ source ~/.zshrc
 vanityrig
 ```
 
-That's it — no flags to learn. It asks what word you want and where to save
-the keys, then walks you through the rest:
-
-```
-VanityRig — find a vanity .onion address
-
-Word to search for (space-separated words = match any one of them): vanityrig
-Save found keys to [~/.vanityrig/keys]:
-
-Where should "vanityrig" appear in the address?
-
-  mode       typical time
-  ──────────────────────────────────────────────────────────
-  prefix     12.7 days
-  suffix     impossible     addresses always end in "d"
-  anywhere   6.6 hours      ← recommended
-
-  "vanityrig" can never end an address, but "vanityrigad" can. Searching all four
-  legal endings together takes about 12.7 days.
-
-Search in which mode? [prefix/suffix/anywhere] (default anywhere, n to cancel):
-```
-
-Pick a mode (or press enter for the recommended one) and it starts, with a
-live dashboard tracking progress.
+That's it — no flags to learn. A real form opens: a text box for the word, a
+text box for where to save keys, and once it knows the cost of each option,
+an arrow-key list to pick prefix, suffix, or anywhere — press enter and it
+starts, straight into a live dashboard tracking progress.
 
 Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
 — see [Usage](#usage) below.
