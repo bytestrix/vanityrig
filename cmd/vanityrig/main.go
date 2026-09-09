@@ -1,11 +1,12 @@
-// Command vanityrig is a distributed vanity .onion address search tool.
+// Command vanityrig finds vanity .onion addresses.
 //
-// This build implements the Feasibility Advisor (PROJECT.md §4a) — the first
-// thing the tool ships, because committing hours of compute to an unachievable
-// pattern is the most expensive mistake it can prevent.
+// It always checks feasibility before searching (PROJECT.md §4a) — committing
+// hours of compute to an unachievable pattern is the most expensive mistake it
+// can prevent — and asks for confirmation before it starts.
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -15,61 +16,66 @@ import (
 	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
-const usage = `vanityrig - vanity .onion address tooling
+const usage = `vanityrig - find a vanity .onion address
 
 Usage:
-  vanityrig search   <pattern> [pattern...]   run a search with a live dashboard
-  vanityrig estimate <pattern> [pattern...]   check how long it would take first
+  vanityrig <word> [word...] [flags]
 
-Get started:
-  vanityrig estimate borderx     see what it will cost
-  vanityrig search   borderx     go and find it
+Tells you the real cost first (search space, expected time, cheaper
+alternatives), then asks before it starts searching.
 
-Both accept -match prefix|suffix|anywhere (default prefix).
-Run 'vanityrig search -h' or 'vanityrig estimate -h' for the full flag list.
+Examples:
+  vanityrig borderx
+  vanityrig borderland -match anywhere
+  vanityrig borderx bordery -stop-after 3
+
+Flags:
+  -match string     where the word may appear: prefix, suffix, anywhere (default "prefix")
+  -threads int      CPU threads to use (default: all cores)
+  -out string       where to save found keys (default ~/.vanityrig/keys)
+  -stop-after int   stop once this many matches are found (default 0, never)
+  -rate float       assumed combined keys/sec, used for the estimate (default 22.2M)
+  -budget duration  longest search you'd accept, for alternatives (default 24h)
+  -check            show the estimate and exit, don't offer to search
+  -y                skip the confirmation prompt and start immediately
+  -plain            print plain lines instead of the live dashboard
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
-	}
-
-	switch os.Args[1] {
-	case "estimate":
-		os.Exit(runEstimate(os.Args[2:]))
-	case "search":
-		os.Exit(runSearch(os.Args[2:]))
-	case "-h", "--help", "help":
-		fmt.Print(usage)
-		os.Exit(0)
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
-	}
+	os.Exit(run(os.Args[1:]))
 }
 
-func runEstimate(args []string) int {
-	fs := flag.NewFlagSet("estimate", flag.ContinueOnError)
+func run(args []string) int {
+	if len(args) == 0 {
+		fmt.Print(usage)
+		return 2
+	}
+	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Print(usage)
+		return 0
+	}
+
+	fs := flag.NewFlagSet("vanityrig", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	mode := fs.String("match", "prefix", "prefix | suffix | anywhere")
-	rate := fs.Float64("rate", 22.2e6, "combined keys/sec")
+	rate := fs.Float64("rate", 22.2e6, "assumed combined keys/sec, for the estimate")
 	budget := fs.Duration("budget", 24*time.Hour, "acceptable search length")
+	threads := fs.Int("threads", 0, "cpu threads (0 = all)")
+	out := fs.String("out", "", "output directory")
+	stopAfter := fs.Int("stop-after", 0, "stop after N matches")
+	plain := fs.Bool("plain", false, "plain output instead of the dashboard")
+	enginePath := fs.String("mkp224o", "", "path to the mkp224o binary")
+	checkOnly := fs.Bool("check", false, "show the estimate and exit")
+	yes := fs.Bool("y", false, "skip the confirmation prompt")
 
-	// Allow flags before or after the patterns.
-	var patterns []string
-	rest := args
-	for len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		patterns = append(patterns, rest[0])
-		rest = rest[1:]
-	}
+	patterns, rest := splitPatterns(args)
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 	patterns = append(patterns, fs.Args()...)
 
 	if len(patterns) == 0 {
-		fmt.Fprint(os.Stderr, "estimate needs at least one pattern\n\n"+usage)
+		fmt.Fprint(os.Stderr, "vanityrig needs at least one word to search for\n\n"+usage)
 		return 2
 	}
 
@@ -86,11 +92,10 @@ func runEstimate(args []string) int {
 	// Malformed input (bad characters, over-length) is a typo, so it stops here —
 	// there is no meaningful estimate for a pattern that cannot be parsed.
 	//
-	// A well-formed but unsatisfiable pattern is NOT stopped: estimate is an
-	// informational command, and refusing to inform contradicts the whole point of
-	// the advisor. It reports honestly (probability zero, "never") and lets the
-	// user decide. Gating belongs at search start, behind an explicit override —
-	// see PROJECT.md §4a: informed consent, not gatekeeping.
+	// A well-formed but unsatisfiable pattern is NOT stopped here: this is an
+	// informational report, and refusing to inform contradicts the whole point of
+	// it. It reports honestly (probability zero, "never") and lets the user
+	// decide — see PROJECT.md §4a: informed consent, not gatekeeping.
 	var malformed bool
 	for _, p := range patterns {
 		if err := vanity.PreflightSyntax(p); err != nil {
@@ -118,5 +123,49 @@ func runEstimate(args []string) int {
 	if est.Probability <= 0 {
 		return 1
 	}
-	return 0
+	if *checkOnly {
+		return 0
+	}
+
+	if !*yes && !confirm(est.Verdict) {
+		fmt.Println("Not starting. Run again with -y to skip this prompt next time.")
+		return 0
+	}
+
+	return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
+}
+
+// confirm asks whether to proceed, defaulting to yes for anything ordinary and
+// to no for anything that will tie up hardware for a long time. Non-interactive
+// input (piped, scripted) never guesses — it requires -y instead.
+func confirm(v vanity.Verdict) bool {
+	defaultYes := v == vanity.VerdictTrivial || v == vanity.VerdictReasonable
+
+	if !isInputTerminal() {
+		fmt.Println("Not running non-interactively without -y.")
+		return false
+	}
+
+	if defaultYes {
+		fmt.Print("Start the search now? [Y/n]: ")
+	} else {
+		fmt.Print("This will take a long time. Start anyway? [y/N]: ")
+	}
+
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" {
+		return defaultYes
+	}
+	return line == "y" || line == "yes"
+}
+
+// isInputTerminal reports whether stdin is an interactive terminal, so a
+// confirmation prompt is never silently guessed at in a script or pipeline.
+func isInputTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }

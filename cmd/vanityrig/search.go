@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,91 +16,39 @@ import (
 	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
-const searchUsage = `vanityrig search - run a vanity address search
-
-Usage:
-  vanityrig search <pattern> [pattern...] [flags]
-
-Flags:
-  -match string   where the pattern may appear: prefix, suffix, anywhere (default "prefix")
-  -threads int    CPU threads to use (default: all cores)
-  -out string     where to save found keys (default ~/.vanityrig/keys)
-  -stop-after int stop once this many matches are found (default 0, never)
-  -plain          print plain lines instead of the live dashboard
-
-Examples:
-  vanityrig search borderx
-  vanityrig search borderland -match anywhere
-  vanityrig search borderx bordery -stop-after 3
-`
-
-func runSearch(args []string) int {
-	fs := flag.NewFlagSet("search", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	mode := fs.String("match", "prefix", "prefix | suffix | anywhere")
-	threads := fs.Int("threads", 0, "cpu threads (0 = all)")
-	out := fs.String("out", "", "output directory")
-	stopAfter := fs.Int("stop-after", 0, "stop after N matches")
-	plain := fs.Bool("plain", false, "plain output instead of the dashboard")
-	enginePath := fs.String("mkp224o", "", "path to the mkp224o binary")
-
-	patterns, rest := splitPatterns(args)
-	if err := fs.Parse(rest); err != nil {
-		return 2
-	}
-	patterns = append(patterns, fs.Args()...)
-
-	if len(patterns) == 0 {
-		fmt.Fprint(os.Stderr, "search needs at least one pattern\n\n"+searchUsage)
-		return 2
-	}
-
-	m, err := vanity.ParseMatchMode(*mode)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 2
-	}
-
+// startSearch runs the search itself, after the feasibility report has already
+// been shown and confirmed (see run in main.go). It validates the pattern
+// again defensively, then drives either the live dashboard or plain output.
+func startSearch(patterns []string, m vanity.MatchMode, threads int, out string, stopAfter int, plain bool, enginePath string) int {
 	// Validate before doing anything else, so an impossible pattern is explained
 	// here rather than discovered after the search has been left running.
 	for _, p := range patterns {
 		if err := vanity.Validate(p, m); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			fmt.Fprintf(os.Stderr, "\nRun 'vanityrig estimate %s -match %s' to see the options.\n", p, m)
 			return 1
 		}
 	}
 
-	if *out == "" {
+	if out == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error: cannot determine home directory; pass -out")
 			return 2
 		}
-		*out = filepath.Join(home, ".vanityrig", "keys")
+		out = filepath.Join(home, ".vanityrig", "keys")
 	}
 
 	r, err := runner.New(runner.Config{
 		Patterns:   patterns,
 		Mode:       m,
-		Threads:    *threads,
-		OutputDir:  *out,
-		EnginePath: *enginePath,
-		StopAfter:  *stopAfter,
+		Threads:    threads,
+		OutputDir:  out,
+		EnginePath: enginePath,
+		StopAfter:  stopAfter,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
-	}
-
-	// Warn before starting when the search is a very long one. Starting a
-	// multi-year search silently would be the tool's worst failure mode.
-	pre := vanity.NewEstimate(patterns, m, estimateRateFor(r.EngineName()))
-	if pre.Verdict == vanity.VerdictHard || pre.Verdict == vanity.VerdictInfeasible {
-		fmt.Fprintf(os.Stderr, "note: this is a long search (typically %s at this engine's speed).\n",
-			roughDuration(pre))
-		fmt.Fprintf(os.Stderr, "      run 'vanityrig estimate %s -match %s' to compare faster options.\n\n",
-			patterns[0], m)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,7 +66,7 @@ func runSearch(args []string) int {
 	errCh := make(chan error, 1)
 	go func() { errCh <- r.Run(ctx) }()
 
-	if *plain || !isTerminal() {
+	if plain || !isTerminal() {
 		runPlain(r, ctx)
 	} else {
 		p := tea.NewProgram(tui.New(r, cancel), tea.WithAltScreen())
@@ -151,33 +98,6 @@ func splitPatterns(args []string) (patterns, rest []string) {
 		rest = rest[1:]
 	}
 	return patterns, rest
-}
-
-// estimateRateFor is a rough throughput used only for the pre-flight warning,
-// before any real measurement exists. The dashboard switches to measured rates
-// as soon as the first sample lands.
-func estimateRateFor(engineName string) float64 {
-	if engineName == "mkp224o" {
-		return 18.5e6
-	}
-	return 100e3
-}
-
-func roughDuration(e vanity.Estimate) string {
-	if vanity.Saturated(e.P50) {
-		return fmt.Sprintf("%.0f years", e.YearsFor(0.5))
-	}
-	d := e.P50
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%.0f minutes", d.Minutes())
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%.1f hours", d.Hours())
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%.1f days", d.Hours()/24)
-	default:
-		return fmt.Sprintf("%.1f years", d.Hours()/24/365.25)
-	}
 }
 
 // runPlain is the no-dashboard path: used with -plain, and automatically when
