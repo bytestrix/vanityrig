@@ -37,26 +37,41 @@ start — which is often dramatically faster than people expect.
 **1. Install**
 
 ```sh
-go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
+GOBIN="$HOME/.local/bin" go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
 ```
 
-Requires [Go](https://go.dev/dl/) 1.21+. This installs to `$(go env
-GOPATH)/bin` — if `vanityrig -h` doesn't run afterward, that directory isn't
-on your `PATH` yet:
+Requires [Go](https://go.dev/dl/) 1.21+. `~/.local/bin` is on `PATH` by
+default on most Linux and macOS setups, so `vanityrig` should just work right
+after this. If it doesn't:
 
 ```sh
-echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc   # or ~/.bashrc
+echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.zshrc   # or ~/.bashrc, or your shell's rc file
 source ~/.zshrc
 ```
 
 **2. Run it**
 
 ```sh
-vanityrig borderx
+vanityrig vanityrig
 ```
 
-That's the whole flow: it prints the search space, the expected time, cheaper
-alternatives, and asks before it starts.
+```
+Where should "vanityrig" appear in the address?
+
+  mode       typical time
+  ──────────────────────────────────────────────────────────
+  prefix     12.7 days
+  suffix     impossible     addresses always end in "d"
+  anywhere   6.6 hours      ← recommended
+
+  "vanityrig" can never end an address, but "vanityrigad" can. Searching all four
+  legal endings together takes about 12.7 days.
+
+Search in which mode? [prefix/suffix/anywhere] (default anywhere, n to cancel):
+```
+
+Pick a mode (or press enter for the recommended one) and it starts, with a
+live dashboard tracking progress.
 
 <details>
 <summary>Other ways to install</summary>
@@ -86,24 +101,27 @@ and anywhere searches always run on VanityRig's built-in engine, since
 vanityrig <word> [word...] [flags]
 ```
 
+Give it a word. If you don't say where it should go, it compares prefix,
+suffix, and anywhere, and asks:
+
 ```sh
-vanityrig borderx                        # check it, then decide
-vanityrig borderland -match anywhere     # match anywhere in the address, not just the start
-vanityrig borderx bordery -stop-after 3  # OR search, stop after 3 total matches
-vanityrig borderx -check                 # just the numbers, don't offer to run it
-vanityrig borderx -y                     # skip the prompt, start immediately
+vanityrig vanityrig                          # compares all 3 modes, asks which to run
+vanityrig vanityrig -match anywhere          # skip the question, go straight to anywhere mode
+vanityrig vanityrig ritrigvan -stop-after 3  # OR search, stop after 3 total matches
+vanityrig vanityrig -check                   # just the numbers, don't offer to run anything
+vanityrig vanityrig -y                       # skip every prompt, use the recommended mode
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-match` | `prefix` | `prefix`, `suffix`, or `anywhere` |
+| `-match` | *(ask)* | `prefix`, `suffix`, or `anywhere` — skips the question if set |
 | `-threads` | all cores | CPU threads to use |
 | `-out` | `~/.vanityrig/keys` | where found keys are saved |
 | `-stop-after` | `0` (never) | stop once this many matches are found |
 | `-rate` | `22.2M` | assumed combined keys/sec, used for the estimate |
 | `-budget` | `24h` | longest search you'd accept, for alternatives |
 | `-check` | off | show the estimate and exit — don't offer to search |
-| `-y` | off | skip the confirmation prompt |
+| `-y` | off | skip every prompt and start immediately |
 | `-plain` | off | plain log lines instead of the live dashboard |
 
 Press `q`, `Esc`, or `Ctrl-C` to stop a running search. Progress is saved
@@ -112,28 +130,30 @@ instead of starting over. A match is written to disk **before** it's
 announced, so a crash between finding and saving can't lose it.
 
 **Exit codes:** `0` achievable (however long the odds), `1` unsatisfiable
-(well formed, but no matching address exists — reported in full, with a
-working alternative), `2` malformed input.
+(well formed, but no matching address exists in any mode), `2` malformed
+input.
 
 ---
 
 ## Why VanityRig
 
-- **Matches anywhere in the address, not just the start.** A 10-character
-  word has 47 possible positions in a 56-character address — matching any of
-  them is often 10-50x faster than pinning it to the front. No other
-  generator supports this.
+- **Matches anywhere in the address, not just the start.** A word has up to
+  47 possible positions in a 56-character address — matching any of them is
+  often 10-50x faster than pinning it to the front. No other generator
+  supports this.
+- **Compares where the word can go, not just how long it takes.** Prefix,
+  suffix, and anywhere have very different costs for the same word, so
+  VanityRig checks all three and tells you which is achievable — instead of
+  silently assuming prefix, or offering to shorten your word to make it
+  faster.
 - **Catches impossible searches before you waste time on them.** The last two
   characters of every v3 address are constrained by the protocol — some
-  words can never appear at the end. VanityRig names the exact rule you hit
-  and offers a fix, instead of searching forever for something that can't
-  exist.
-- **Shows its work.** Every estimate prints the exponent form, the exact
-  count, the assumed rate, and the resulting time side by side, so a wrong
-  number is visible on its face rather than hidden behind a verdict.
-- **Presents trade-offs, not corrections.** The word you asked for always
-  appears in the comparison table, ranked alongside faster or shorter
-  alternatives — you decide, it doesn't decide for you.
+  words can never appear at the end. VanityRig names the exact rule and
+  offers a fix (search all four legal endings together) instead of searching
+  forever for something that can't exist.
+- **Shows its work.** Every estimate is a real, checkable calculation —
+  exponent form, exact count, assumed rate — so a wrong number is visible on
+  its face rather than hidden behind a verdict.
 - **Has its own search engine**, so suffix and anywhere-position matching
   actually run instead of being advertised and silently unsupported. Keys
   are byte-identical to `mkp224o`'s output, verified in the test suite.
