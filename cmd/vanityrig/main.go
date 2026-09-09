@@ -21,13 +21,15 @@ import (
 const usage = `vanityrig - find a vanity .onion address
 
 Usage:
-  vanityrig <word> [word...] [flags]
+  vanityrig                                   guided prompts — just type answers
+  vanityrig <word> [word...] [flags]          the same thing, one command
 
 Tells you the real cost first, then asks before it starts searching. Pass
 -match to pick a position yourself; otherwise it compares prefix, suffix and
 anywhere and asks which you want.
 
 Examples:
+  vanityrig
   vanityrig vanityrig
   vanityrig vanityrig -match anywhere
   vanityrig vanityrig ritrigvan -stop-after 3
@@ -50,6 +52,13 @@ func main() {
 
 func run(args []string) int {
 	if len(args) == 0 {
+		// A real terminal with nothing typed yet is someone who wants to be
+		// guided, not someone who forgot a flag — walk them through it instead
+		// of dumping usage text. Anything non-interactive (a script, a pipe)
+		// has no one to answer prompts, so it gets the usage text and exits.
+		if isInputTerminal() {
+			return runWizard()
+		}
 		fmt.Print(usage)
 		return 2
 	}
@@ -130,6 +139,42 @@ func run(args []string) int {
 	}
 
 	return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
+}
+
+// runWizard is what a bare `vanityrig` runs into a real terminal: a short
+// guided setup (word, then where to save keys) that hands off into the same
+// mode-comparison flow as the command-line form, rather than requiring anyone
+// to already know the flags before they can use the tool.
+func runWizard() int {
+	fmt.Println("VanityRig — find a vanity .onion address")
+	fmt.Println()
+
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Word to search for (space-separated words = match any one of them): ")
+	line, _ := reader.ReadString('\n')
+	patterns := strings.Fields(line)
+	if len(patterns) == 0 {
+		fmt.Println("No word given — nothing to do.")
+		return 2
+	}
+
+	var malformed bool
+	for _, p := range patterns {
+		if err := vanity.PreflightSyntax(p); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			malformed = true
+		}
+	}
+	if malformed {
+		return 2
+	}
+
+	fmt.Print("Save found keys to [~/.vanityrig/keys]: ")
+	outLine, _ := reader.ReadString('\n')
+	out := strings.TrimSpace(outLine)
+
+	return runCompare(patterns, 22.2e6, 0, out, 0, false, "", false, false)
 }
 
 // runCompare handles the common case: the caller gave a word but no -match,

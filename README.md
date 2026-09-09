@@ -52,10 +52,18 @@ source ~/.zshrc
 **2. Run it**
 
 ```sh
-vanityrig vanityrig
+vanityrig
 ```
 
+That's it — no flags to learn. It asks what word you want and where to save
+the keys, then walks you through the rest:
+
 ```
+VanityRig — find a vanity .onion address
+
+Word to search for (space-separated words = match any one of them): vanityrig
+Save found keys to [~/.vanityrig/keys]:
+
 Where should "vanityrig" appear in the address?
 
   mode       typical time
@@ -72,6 +80,9 @@ Search in which mode? [prefix/suffix/anywhere] (default anywhere, n to cancel):
 
 Pick a mode (or press enter for the recommended one) and it starts, with a
 live dashboard tracking progress.
+
+Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
+— see [Usage](#usage) below.
 
 <details>
 <summary>Other ways to install</summary>
@@ -98,11 +109,12 @@ and anywhere searches always run on VanityRig's built-in engine, since
 ## Usage
 
 ```sh
-vanityrig <word> [word...] [flags]
+vanityrig                          # guided prompts (see Quick start above)
+vanityrig <word> [word...] [flags] # the same thing, one command — for scripts and repeat use
 ```
 
-Give it a word. If you don't say where it should go, it compares prefix,
-suffix, and anywhere, and asks:
+If you don't say where the word should go, it compares prefix, suffix, and
+anywhere, and asks:
 
 ```sh
 vanityrig vanityrig                          # compares all 3 modes, asks which to run
@@ -115,8 +127,8 @@ vanityrig vanityrig -y                       # skip every prompt, use the recomm
 | Flag | Default | Meaning |
 |---|---|---|
 | `-match` | *(ask)* | `prefix`, `suffix`, or `anywhere` — skips the question if set |
-| `-threads` | all cores | CPU threads to use |
 | `-out` | `~/.vanityrig/keys` | where found keys are saved |
+| `-threads` | all cores | CPU threads to use |
 | `-stop-after` | `0` (never) | stop once this many matches are found |
 | `-rate` | `22.2M` | assumed combined keys/sec, used for the estimate |
 | `-budget` | `24h` | longest search you'd accept, for alternatives |
