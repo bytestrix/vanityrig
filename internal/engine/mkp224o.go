@@ -212,7 +212,7 @@ func Select(mode vanity.MatchMode, mkPath string) (Engine, string) {
 		if ok, _ := mk.Available(); ok {
 			return mk, "using mkp224o (fast prefix engine)"
 		}
-		return Native{}, "mkp224o not installed, using the slower built-in engine"
+		return Native{}, "mkp224o not found; using the built-in engine"
 	}
-	return Native{}, fmt.Sprintf("using the built-in engine: mkp224o cannot do %s matching", mode)
+	return Native{}, fmt.Sprintf("mkp224o cannot do %s matching; using built-in", mode)
 }

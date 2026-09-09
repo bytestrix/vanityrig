@@ -107,21 +107,35 @@ func TestUnrelatedKeysDoNotQuit(t *testing.T) {
 	}
 }
 
+// Every match mode has its own engine-selection note (mkp224o found, not
+// found, or can't do this mode at all) and each is a different length — a
+// layout check against only one mode can pass while the other two overflow.
+// This caught exactly that: the prefix case fit, but the "mkp224o not
+// installed" and "mkp224o cannot do %s matching" notes did not.
 func TestNarrowTerminalDoesNotBreakLayout(t *testing.T) {
-	m := New(newTestRunner(t, []string{"borderx"}, vanity.MatchPrefix), func() {})
-	for _, w := range []int{40, 60, 80, 120, 300} {
-		updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 24})
-		out := updated.View()
-		if out == "" {
-			t.Fatalf("width %d rendered nothing", w)
-		}
-		for _, line := range strings.Split(out, "\n") {
-			// Measure rendered width, not bytes: box-drawing glyphs are multi-byte
-			// and ANSI colour codes take no columns at all, so len() would flag
-			// perfectly good lines.
-			if got := lipgloss.Width(line); got > w {
-				t.Errorf("width %d produced a %d-column line, which will wrap: %q",
-					w, got, line)
+	// "borderx" isn't a legal suffix (addresses must end in one of ad/id/qd/yd),
+	// so each mode needs its own valid pattern here.
+	patterns := map[vanity.MatchMode][]string{
+		vanity.MatchPrefix:   {"borderx"},
+		vanity.MatchSuffix:   {"borderad"},
+		vanity.MatchAnywhere: {"borderx"},
+	}
+	for _, mode := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
+		m := New(newTestRunner(t, patterns[mode], mode), func() {})
+		for _, w := range []int{40, 60, 80, 120, 300} {
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 24})
+			out := updated.View()
+			if out == "" {
+				t.Fatalf("mode %s, width %d rendered nothing", mode, w)
+			}
+			for _, line := range strings.Split(out, "\n") {
+				// Measure rendered width, not bytes: box-drawing glyphs are multi-byte
+				// and ANSI colour codes take no columns at all, so len() would flag
+				// perfectly good lines.
+				if got := lipgloss.Width(line); got > w {
+					t.Errorf("mode %s, width %d produced a %d-column line, which will wrap: %q",
+						mode, w, got, line)
+				}
 			}
 		}
 	}
