@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // matcher tests a generated address against the search patterns.

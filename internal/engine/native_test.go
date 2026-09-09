@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 func TestMatcherModes(t *testing.T) {

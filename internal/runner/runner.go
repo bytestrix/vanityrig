@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rishibaghel25/vanityrig/internal/engine"
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/engine"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // Match is a found address as recorded by the runner.

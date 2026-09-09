@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // realKeyDir is a key pair produced by mkp224o during the search this project

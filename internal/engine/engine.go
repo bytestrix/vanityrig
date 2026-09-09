@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // EventKind distinguishes what an Event carries.

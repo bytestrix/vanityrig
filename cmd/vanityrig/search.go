@@ -12,9 +12,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rishibaghel25/vanityrig/internal/runner"
-	"github.com/rishibaghel25/vanityrig/internal/tui"
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/runner"
+	"github.com/bytestrix/vanityrig/internal/tui"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 const searchUsage = `vanityrig search - run a vanity address search

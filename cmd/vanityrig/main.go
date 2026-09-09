@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 const usage = `vanityrig - vanity .onion address tooling

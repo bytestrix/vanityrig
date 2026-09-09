@@ -1,4 +1,4 @@
-module github.com/rishibaghel25/vanityrig
+module github.com/bytestrix/vanityrig
 
 go 1.26.5
 

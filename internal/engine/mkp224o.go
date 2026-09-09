@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // Mkp224o drives the external mkp224o binary.

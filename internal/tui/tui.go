@@ -15,8 +15,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rishibaghel25/vanityrig/internal/runner"
-	"github.com/rishibaghel25/vanityrig/internal/vanity"
+	"github.com/bytestrix/vanityrig/internal/runner"
+	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
 // refreshRate is how often the screen redraws. Fast enough to feel live, slow
