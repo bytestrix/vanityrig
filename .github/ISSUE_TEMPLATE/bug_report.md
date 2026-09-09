@@ -1,38 +1,35 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Something doesn't work the way it should
 title: ''
-labels: ''
+labels: bug
 assignees: ''
-
 ---
 
 **Describe the bug**
-A clear and concise description of what the bug is.
+A clear and concise description of what went wrong.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+**Command run**
+```
+vanityrig ...
+```
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen instead.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Actual behavior**
+What actually happened — include the exact output/error text if there was one.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
-
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+**Environment**
+- VanityRig version: `vanityrig -h` first line, or the git commit
+- OS/architecture: e.g. Linux x86_64, macOS arm64
+- Go version (if built from source): `go version`
+- `mkp224o` installed? (yes/no, and version if yes)
 
 **Additional context**
-Add any other context about the problem here.
+Anything else that might help — a pattern that triggers it reliably, whether
+it happens every time or intermittently, etc.
+
+Found a security issue instead (weak keys, a leaked secret, crash on
+untrusted input)? Please don't file it here — see
+[SECURITY.md](../../SECURITY.md).

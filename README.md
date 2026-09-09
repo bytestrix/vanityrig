@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/bytestrix/vanityrig/actions/workflows/ci.yml"><img src="https://github.com/bytestrix/vanityrig/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pkg.go.dev/github.com/bytestrix/vanityrig"><img src="https://pkg.go.dev/badge/github.com/bytestrix/vanityrig.svg" alt="Go Reference"></a>
   <a href="https://goreportcard.com/report/github.com/bytestrix/vanityrig"><img src="https://goreportcard.com/badge/github.com/bytestrix/vanityrig" alt="Go Report Card"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
@@ -12,7 +13,8 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#why-vanityrig">Why VanityRig</a> ·
-  <a href="#contributing">Contributing</a>
+  <a href="#contributing">Contributing</a> ·
+  <a href="SECURITY.md">Security</a>
 </p>
 
 ---
@@ -74,8 +76,8 @@ Build from source:
 ```sh
 git clone https://github.com/bytestrix/vanityrig.git
 cd vanityrig
-go build -o bin/vanityrig ./cmd/vanityrig
-go test ./...
+make build
+make test
 ```
 
 Optional: install [`mkp224o`](https://github.com/cathugger/mkp224o) and put
@@ -156,8 +158,26 @@ input.
 
 ## Contributing
 
-Issues and pull requests are welcome.
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Open an issue before a large PR.
+`make test` and `make lint` must pass.
+
+New here? Start with [good first issue](https://github.com/bytestrix/vanityrig/labels/good%20first%20issue).
+
+Found a security issue rather than an ordinary bug? Please don't open a
+public issue — see [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — permissive and simple: use it, modify it, ship it in
+something closed-source if you want, just keep the copyright notice.
+
+## Contributors
+
+<a href="https://github.com/bytestrix/vanityrig/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bytestrix/vanityrig" alt="Contributors" />
+</a>
+
+<p align="center">
+  Built by <a href="https://bytestrix.com">Bytestrix</a>
+</p>
