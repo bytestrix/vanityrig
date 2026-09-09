@@ -111,11 +111,11 @@ func runWizardForm() (patterns []string, out string, mode vanity.MatchMode, ok b
 		Negative("Not now").
 		Value(&proceed)
 
+	// One group, not one-per-field: every field renders on the same screen at
+	// once (Tab/Shift-Tab to move between them) instead of each answer paging
+	// to a new screen and losing sight of the last one.
 	form := huh.NewForm(
-		huh.NewGroup(wordField),
-		huh.NewGroup(outField),
-		huh.NewGroup(modeField),
-		huh.NewGroup(confirmField),
+		huh.NewGroup(wordField, outField, modeField, confirmField),
 	).WithProgramOptions(tea.WithAltScreen())
 
 	if err := form.Run(); err != nil {
@@ -128,8 +128,8 @@ func runWizardForm() (patterns []string, out string, mode vanity.MatchMode, ok b
 }
 
 // askModeAndConfirm is the command-line-argument counterpart to the wizard's
-// mode+confirm steps: the word is already known, so it's one two-group
-// full-screen form (pick a mode, then confirm) instead of separate prompts.
+// mode+confirm steps: the word is already known, so it's one screen (pick a
+// mode, then confirm) instead of separate prompts.
 func askModeAndConfirm(cmp vanity.ModeComparison) (mode vanity.MatchMode, ok bool) {
 	chosen := cmp.Best
 	proceed := true
@@ -152,8 +152,7 @@ func askModeAndConfirm(cmp vanity.ModeComparison) (mode vanity.MatchMode, ok boo
 		Value(&proceed)
 
 	form := huh.NewForm(
-		huh.NewGroup(modeField),
-		huh.NewGroup(confirmField),
+		huh.NewGroup(modeField, confirmField),
 	).WithProgramOptions(tea.WithAltScreen())
 
 	if err := form.Run(); err != nil {
