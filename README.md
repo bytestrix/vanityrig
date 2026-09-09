@@ -37,8 +37,11 @@ start — which is often dramatically faster than people expect.
 **1. Install**
 
 ```sh
-GOBIN="$HOME/.local/bin" go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
+GOBIN="$HOME/.local/bin" go install github.com/bytestrix/vanityrig/cmd/vanityrig@v0.1.0
 ```
+
+(`@latest` also works, but Go's public module proxy can take a little while to
+notice a brand-new release — pinning the version sidesteps that.)
 
 Requires [Go](https://go.dev/dl/) 1.21+. `~/.local/bin` is on `PATH` by
 default on most Linux and macOS setups, so `vanityrig` should just work right
