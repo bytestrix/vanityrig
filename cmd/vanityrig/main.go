@@ -1,8 +1,8 @@
 // Command vanityrig finds vanity .onion addresses.
 //
-// It always checks feasibility before searching (PROJECT.md §4a) — committing
-// hours of compute to an unachievable pattern is the most expensive mistake it
-// can prevent — and asks for confirmation before it starts. When the caller
+// It always checks feasibility before searching — committing hours of compute
+// to an unachievable pattern is the most expensive mistake it can prevent —
+// and asks for confirmation before it starts. When the caller
 // hasn't said which match mode they want, it compares all three (prefix,
 // suffix, anywhere) instead of guessing one.
 package main
@@ -101,7 +101,7 @@ func run(args []string) int {
 	// A well-formed but unsatisfiable pattern is NOT stopped here: this is an
 	// informational report, and refusing to inform contradicts the whole point of
 	// it. It reports honestly (probability zero, "never") and lets the user
-	// decide — see PROJECT.md §4a: informed consent, not gatekeeping.
+	// decide: informed consent, not gatekeeping.
 	var malformed bool
 	for _, p := range patterns {
 		if err := vanity.PreflightSyntax(p); err != nil {

@@ -24,7 +24,7 @@ const referenceFleetTries = 100 * 250e6 * 30 * 24 * 3600
 
 // Estimate is a complete, self-auditing feasibility report. Every field needed to
 // re-derive the conclusion by hand is present, because a verdict the user cannot
-// check is worse than no verdict (PROJECT.md §4a).
+// check is worse than no verdict.
 type Estimate struct {
 	Patterns      []string
 	Mode          MatchMode

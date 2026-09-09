@@ -174,9 +174,7 @@ input.
 
 ## Contributing
 
-Issues and pull requests are welcome. [PROJECT.md](PROJECT.md) has the full
-design writeup — engine research, the data model, and the reasoning behind
-every decision above — and is the place to start for anything nontrivial.
+Issues and pull requests are welcome.
 
 ## License
 

@@ -152,7 +152,8 @@ func ExpectedTries(p float64) float64 {
 }
 
 // PrefixSpace returns the exact integer 32^n, for showing work in the advisor
-// output. Computed, never hardcoded — see PROJECT.md §4a accuracy requirement #1.
+// output. Always computed, never hardcoded, so a wrong exponent can't hide
+// behind a typed-out constant.
 func PrefixSpace(n int) *big.Int {
 	return new(big.Int).Exp(big.NewInt(32), big.NewInt(int64(n)), nil)
 }
@@ -163,7 +164,7 @@ func PrefixSpace(n int) *big.Int {
 //
 // It deliberately says nothing about whether the pattern can ever match. That is a
 // finding to be reported with its arithmetic, not an input error to be thrown back
-// at the user (PROJECT.md §4a: informed consent, not gatekeeping).
+// at the user: informed consent, not gatekeeping.
 func PreflightSyntax(pattern string) error {
 	pattern = Normalize(pattern)
 	runes := []rune(pattern)

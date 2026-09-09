@@ -3,7 +3,7 @@
 //
 // Everything here works in BITS of difficulty rather than decimal counts. That is
 // a deliberate accuracy measure, not a style preference: a 50-vs-60 bit mistake is
-// glaring, while a 1.126e15-vs-1.153e18 mistake is invisible. See PROJECT.md §4a.
+// glaring, while a 1.126e15-vs-1.153e18 mistake is invisible.
 package vanity
 
 import "strings"
