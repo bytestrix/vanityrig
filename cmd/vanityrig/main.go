@@ -11,7 +11,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/bytestrix/vanityrig/internal/vanity"
@@ -132,46 +131,30 @@ func run(args []string) int {
 	if *checkOnly {
 		return 0
 	}
-	if !*yes && !confirm(est.Verdict) {
-		fmt.Println("Not starting. Run again with -y to skip this prompt next time.")
-		return 0
+	if !*yes {
+		if !isInputTerminal() {
+			fmt.Println("Not running non-interactively without -y.")
+			return 0
+		}
+		if !askConfirmStart(est.Verdict) {
+			fmt.Println("Not starting.")
+			return 0
+		}
 	}
 
 	return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
 }
 
-// runWizard is what a bare `vanityrig` runs into a real terminal: a short
-// guided setup (word, then where to save keys) using real form fields —
-// text boxes and a select list — rather than typed answers, then it hands off
-// into the same mode-comparison flow as the command-line form.
+// runWizard is what a bare `vanityrig` runs into a real terminal: one
+// continuous full-screen form (word, save location, mode, confirm) rather
+// than a sequence of separate prompts — see runWizardForm.
 func runWizard() int {
-	fmt.Println("VanityRig — find a vanity .onion address")
-	fmt.Println()
-
-	patterns, ok := askWord()
+	patterns, out, mode, ok := runWizardForm()
 	if !ok {
-		fmt.Println("Cancelled.")
+		fmt.Println("Not starting.")
 		return 0
 	}
-
-	var malformed bool
-	for _, p := range patterns {
-		if err := vanity.PreflightSyntax(p); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			malformed = true
-		}
-	}
-	if malformed {
-		return 2
-	}
-
-	out, ok := askOutputDir()
-	if !ok {
-		fmt.Println("Cancelled.")
-		return 0
-	}
-
-	return runCompare(patterns, 22.2e6, 0, out, 0, false, "", false, false)
+	return startSearch(patterns, mode, 0, out, 0, false, "")
 }
 
 // runCompare handles the common case: the caller gave a word but no -match,
@@ -179,23 +162,25 @@ func runWizard() int {
 // instead of silently assuming prefix.
 func runCompare(patterns []string, rate float64, threads int, out string, stopAfter int, plain bool, enginePath string, checkOnly, yes bool) int {
 	cmp := vanity.CompareModes(patterns, rate)
-	vanity.WriteModeComparison(os.Stdout, cmp)
 
 	if cmp.Best == "" {
+		vanity.WriteModeComparison(os.Stdout, cmp)
 		fmt.Println("None of the match modes can ever produce this exact word. Try a different word.")
 		return 1
 	}
 	if checkOnly {
+		vanity.WriteModeComparison(os.Stdout, cmp)
 		return 0
 	}
 
 	chosen := cmp.Best
 	if !yes {
 		if !isInputTerminal() {
+			vanity.WriteModeComparison(os.Stdout, cmp)
 			fmt.Println("Not running non-interactively without -y.")
 			return 0
 		}
-		m, ok := askMode(cmp)
+		m, ok := askModeAndConfirm(cmp)
 		if !ok {
 			fmt.Println("Not starting.")
 			return 0
@@ -203,34 +188,7 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 		chosen = m
 	}
 
-	est := cmp.Estimates[chosen]
-	if est.Probability <= 0 {
-		fmt.Printf("error: %q can never match in %s mode.\n", strings.Join(patterns, ", "), chosen)
-		return 1
-	}
-
-	needsConfirm := est.Verdict == vanity.VerdictExpensive ||
-		est.Verdict == vanity.VerdictHard || est.Verdict == vanity.VerdictInfeasible
-	if !yes && needsConfirm && !askProceed(est.Verdict) {
-		fmt.Println("Not starting. Run again with -y to skip this prompt next time.")
-		return 0
-	}
-
 	return startSearch(patterns, chosen, threads, out, stopAfter, plain, enginePath)
-}
-
-// confirm asks whether to proceed, defaulting to yes for anything ordinary and
-// to no for anything that will tie up hardware for a long time. Non-interactive
-// input (piped, scripted) never guesses — it requires -y instead.
-func confirm(v vanity.Verdict) bool {
-	if !isInputTerminal() {
-		fmt.Println("Not running non-interactively without -y.")
-		return false
-	}
-	if v == vanity.VerdictExpensive || v == vanity.VerdictHard || v == vanity.VerdictInfeasible {
-		return askProceed(v)
-	}
-	return askStart()
 }
 
 // isInputTerminal reports whether stdin is an interactive terminal, so a

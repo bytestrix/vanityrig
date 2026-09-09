@@ -40,21 +40,44 @@ func CompareModes(patterns []string, rate float64) ModeComparison {
 	return cmp
 }
 
-// suffixReason names, in one short phrase, the protocol rule a single-word
-// pattern breaks as a suffix. Empty if the pattern is fine as a suffix.
+// legalEndings lists every possible last-two-characters of a v3 address —
+// computed from the protocol constants, never typed out, so the list can't
+// drift from the rule it's describing.
+func legalEndings() []string {
+	out := make([]string, 0, len(PenultimateChars))
+	for _, c := range PenultimateChars {
+		out = append(out, string(c)+string(FinalChar))
+	}
+	return out
+}
+
+// suffixReason names, concretely, why a single-word pattern can't be a
+// suffix: not just which rule it breaks, but what a legal ending actually
+// looks like, so the reader doesn't have to reconstruct that themselves.
+// Empty if the pattern is fine as a suffix.
 func suffixReason(pattern string) string {
 	pattern = Normalize(pattern)
 	runes := []rune(pattern)
 	if len(runes) == 0 {
 		return ""
 	}
+
+	badEnding := false
 	if last := runes[len(runes)-1]; last != FinalChar {
-		return fmt.Sprintf("addresses always end in %q", string(FinalChar))
+		badEnding = true
+	} else if len(runes) >= 2 && !isPenultimateValid(runes[len(runes)-2]) {
+		badEnding = true
 	}
-	if len(runes) >= 2 && !isPenultimateValid(runes[len(runes)-2]) {
-		return "second-to-last character must be a/i/q/y"
+	if !badEnding {
+		return ""
 	}
-	return ""
+
+	got := string(runes[len(runes)-1:])
+	if len(runes) >= 2 {
+		got = string(runes[len(runes)-2:])
+	}
+	return fmt.Sprintf("every v3 address ends in %s — this one ends in %q",
+		strings.Join(legalEndings(), "/"), got)
 }
 
 // WriteModeComparison prints the three-mode table, plus a tail-completion

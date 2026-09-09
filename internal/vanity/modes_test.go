@@ -24,8 +24,9 @@ func TestCompareModesRecommendsAnywhereForAnOrdinaryWord(t *testing.T) {
 	}
 }
 
-// borderland's penultimate character is 'n', which is not in a/i/q/y, so it can
-// never be a valid suffix — the exact bug this project's own history caught.
+// borderland ends in "nd", which is not one of the four legal endings
+// (ad/id/qd/yd), so it can never be a valid suffix — the exact bug this
+// project's own history caught.
 func TestCompareModesMarksImpossibleSuffix(t *testing.T) {
 	cmp := CompareModes([]string{"borderland"}, 22.2e6)
 
@@ -36,14 +37,21 @@ func TestCompareModesMarksImpossibleSuffix(t *testing.T) {
 	if cmp.Best == MatchSuffix {
 		t.Error("an impossible mode must never be recommended")
 	}
-	if reason := suffixReason("borderland"); !strings.Contains(reason, "a/i/q/y") {
-		t.Errorf("suffixReason should name the penultimate-character rule, got %q", reason)
+	if reason := suffixReason("borderland"); !strings.Contains(reason, "ad/id/qd/yd") {
+		t.Errorf("suffixReason should list the legal endings, got %q", reason)
+	}
+	if reason := suffixReason("borderland"); !strings.Contains(reason, `"nd"`) {
+		t.Errorf("suffixReason should name what this pattern actually ends in, got %q", reason)
 	}
 }
 
 func TestSuffixReasonNamesTheTrailingCharacterRule(t *testing.T) {
-	if reason := suffixReason("border"); !strings.Contains(reason, `"d"`) {
-		t.Errorf("border ends in 'r', not 'd' — want the trailing-char rule, got %q", reason)
+	reason := suffixReason("border")
+	if !strings.Contains(reason, "ad/id/qd/yd") {
+		t.Errorf("border ends in 'r', not a legal ending — want the endings listed, got %q", reason)
+	}
+	if !strings.Contains(reason, `"er"`) {
+		t.Errorf("want the actual offending ending named, got %q", reason)
 	}
 }
 
@@ -77,8 +85,8 @@ func TestWriteModeComparisonExplainsImpossibleSuffix(t *testing.T) {
 	if !strings.Contains(out, "impossible") {
 		t.Errorf("expected borderland's suffix row to say impossible:\n%s", out)
 	}
-	if !strings.Contains(out, "a/i/q/y") {
-		t.Errorf("expected the penultimate-character rule to be named:\n%s", out)
+	if !strings.Contains(out, "ad/id/qd/yd") {
+		t.Errorf("expected the legal endings to be listed:\n%s", out)
 	}
 	if !strings.Contains(out, "borderlandad") {
 		t.Errorf("expected a tail-completion suggestion:\n%s", out)
@@ -94,7 +102,7 @@ func TestCompareModesHandlesMultiplePatterns(t *testing.T) {
 	WriteModeComparison(&b, cmp)
 	// Multi-pattern suffix explanations are skipped rather than guessed at, since
 	// the two patterns could break different rules.
-	if strings.Contains(b.String(), "a/i/q/y") {
+	if strings.Contains(b.String(), "ad/id/qd/yd") {
 		t.Error("multi-pattern suffix rows should not print a single-pattern reason")
 	}
 }
