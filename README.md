@@ -1,83 +1,90 @@
-# VanityRig
+<p align="center">
+  <img src="docs/banner.svg" alt="VanityRig — Tor v3 vanity .onion generator with prefix/suffix/anywhere matching" width="100%" />
+</p>
 
-Find a custom Tor `.onion` address — one that starts with, ends with, or
-contains a word you choose — with an honest cost estimate before it runs.
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/bytestrix/vanityrig"><img src="https://pkg.go.dev/badge/github.com/bytestrix/vanityrig.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/bytestrix/vanityrig"><img src="https://goreportcard.com/badge/github.com/bytestrix/vanityrig" alt="Go Report Card"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
-```
-$ vanityrig borderland
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#why-vanityrig">Why VanityRig</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
 
-Feasibility check: "borderland" (prefix match)
+---
 
-  Search space:    32^10 = 2^50 = 1,125,899,906,842,624 possibilities
-  Your throughput: 22.20 million keys/sec
+## What is it?
 
-  Expected time to find:
-    P50 (coin flip):    1.1 years
-    mean:               1.6 years
-    P90 (90% by then):  3.7 years
+A Tor v3 `.onion` address is 56 random-looking characters. VanityRig finds
+one containing a word you choose — at the start, at the end, or anywhere in
+the middle — and tells you honestly what that will cost **before** it spends
+any CPU time on it.
 
-  Verdict: HARD — years on this hardware, but rentable compute can close the gap
+It's built on [`mkp224o`](https://github.com/cathugger/mkp224o), the
+standard generator for this, and adds the three things that tool doesn't
+have: an accurate up-front time/cost estimate, a live progress dashboard, and
+the ability to match a word anywhere in the address rather than only at the
+start — which is often dramatically faster than people expect.
 
-  Your options — pick whichever suits you:
+---
 
-    search for               word appears       typical time    word
-    ────────────────────────────────────────────────────────────────────
-    borderland               start              1.1 years       full  (what you asked for)
-  → borderland               anywhere           9.0 days        full  ← recommended
-    borderla                 start (shortened)  9.5 hours       shortened
-    border                   start (shortened)  34 seconds      shortened
+## Quick start
 
-    Recommended: borderland (anywhere) — same full word, much faster.
-    That is only a suggestion; any option above is yours to run.
-
-Start the search now? [Y/n]:
-```
-
-## Install
-
-Requires [Go](https://go.dev/dl/) 1.21+.
+**1. Install**
 
 ```sh
 go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
 ```
 
-`go install` puts the binary in `$(go env GOPATH)/bin`, which needs to be on
-your `PATH`. If `vanityrig -h` doesn't work after installing, that's why —
-add it once and it's fixed for good:
+Requires [Go](https://go.dev/dl/) 1.21+. This installs to `$(go env
+GOPATH)/bin` — if `vanityrig -h` doesn't run afterward, that directory isn't
+on your `PATH` yet:
 
 ```sh
 echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc   # or ~/.bashrc
 source ~/.zshrc
 ```
 
-Confirm it worked:
+**2. Run it**
 
 ```sh
-vanityrig -h
+vanityrig borderx
 ```
 
-Building from source instead of installing:
+That's the whole flow: it prints the search space, the expected time, cheaper
+alternatives, and asks before it starts.
+
+<details>
+<summary>Other ways to install</summary>
+
+Build from source:
 
 ```sh
 git clone https://github.com/bytestrix/vanityrig.git
 cd vanityrig
 go build -o bin/vanityrig ./cmd/vanityrig
+go test ./...
 ```
 
-Optional: install [`mkp224o`](https://github.com/cathugger/mkp224o) and put it
-on your `PATH`. VanityRig uses it automatically for prefix searches — it's
+Optional: install [`mkp224o`](https://github.com/cathugger/mkp224o) and put
+it on your `PATH`. VanityRig uses it automatically for prefix searches — it's
 about 180x faster per core than VanityRig's own engine for that mode. Suffix
 and anywhere searches always run on VanityRig's built-in engine, since
 `mkp224o` can't do those at all.
+
+</details>
+
+---
 
 ## Usage
 
 ```sh
 vanityrig <word> [word...] [flags]
 ```
-
-That's the whole interface. Give it a word, it tells you the real cost, and
-asks before it starts:
 
 ```sh
 vanityrig borderx                        # check it, then decide
@@ -104,9 +111,11 @@ continuously, so running the same word again continues from where it left off
 instead of starting over. A match is written to disk **before** it's
 announced, so a crash between finding and saving can't lose it.
 
-Exit codes: `0` achievable (however long the odds), `1` unsatisfiable (well
-formed, but no matching address exists — reported in full, with a working
-alternative), `2` malformed input.
+**Exit codes:** `0` achievable (however long the odds), `1` unsatisfiable
+(well formed, but no matching address exists — reported in full, with a
+working alternative), `2` malformed input.
+
+---
 
 ## Why VanityRig
 
@@ -116,9 +125,9 @@ alternative), `2` malformed input.
   generator supports this.
 - **Catches impossible searches before you waste time on them.** The last two
   characters of every v3 address are constrained by the protocol — some
-  words can never appear at the end. VanityRig tells you the exact rule you
-  hit and offers a fix, instead of searching forever for something that
-  can't exist.
+  words can never appear at the end. VanityRig names the exact rule you hit
+  and offers a fix, instead of searching forever for something that can't
+  exist.
 - **Shows its work.** Every estimate prints the exponent form, the exact
   count, the assumed rate, and the resulting time side by side, so a wrong
   number is visible on its face rather than hidden behind a verdict.
@@ -128,6 +137,8 @@ alternative), `2` malformed input.
 - **Has its own search engine**, so suffix and anywhere-position matching
   actually run instead of being advertised and silently unsupported. Keys
   are byte-identical to `mkp224o`'s output, verified in the test suite.
+
+---
 
 ## Contributing
 
