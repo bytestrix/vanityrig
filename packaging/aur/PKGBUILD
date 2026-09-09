@@ -1,0 +1,19 @@
+# Maintainer: Bytestrix <support@bytestrix.com>
+pkgname=vanityrig-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Vanity Tor v3 .onion address finder with prefix/suffix/anywhere matching"
+arch=('x86_64' 'aarch64')
+url="https://github.com/bytestrix/vanityrig"
+license=('MIT')
+provides=('vanityrig')
+conflicts=('vanityrig')
+source_x86_64=("$pkgname-$pkgver.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v$pkgver/vanityrig_linux_amd64.tar.gz")
+source_aarch64=("$pkgname-$pkgver.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v$pkgver/vanityrig_linux_arm64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 "$srcdir/vanityrig" "$pkgdir/usr/bin/vanityrig"
+    install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
+}

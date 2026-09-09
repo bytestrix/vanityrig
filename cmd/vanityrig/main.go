@@ -16,6 +16,11 @@ import (
 	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
+// version is set at build time via -ldflags "-X main.version=...". Release
+// binaries get their real tag; anything built with plain `go build` or
+// `go install` stays "dev" rather than lying about which release it is.
+var version = "dev"
+
 const usage = `vanityrig - find a vanity .onion address
 
 Usage:
@@ -42,6 +47,7 @@ Flags:
   -check            show the estimate and exit, don't offer to search
   -y                skip every prompt and start immediately (recommended mode, if -match is unset)
   -plain            print plain lines instead of the live dashboard
+  -version          print the version and exit
 `
 
 func main() {
@@ -62,6 +68,10 @@ func run(args []string) int {
 	}
 	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Print(usage)
+		return 0
+	}
+	if args[0] == "-version" || args[0] == "--version" {
+		fmt.Println("vanityrig", version)
 		return 0
 	}
 

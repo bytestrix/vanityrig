@@ -39,20 +39,13 @@ start — which is often dramatically faster than people expect.
 **1. Install**
 
 ```sh
-GOBIN="$HOME/.local/bin" go install github.com/bytestrix/vanityrig/cmd/vanityrig@v0.1.0
+curl -fsSL https://raw.githubusercontent.com/bytestrix/vanityrig/main/install.sh | bash
 ```
 
-(`@latest` also works, but Go's public module proxy can take a little while to
-notice a brand-new release — pinning the version sidesteps that.)
-
-Requires [Go](https://go.dev/dl/) 1.21+. `~/.local/bin` is on `PATH` by
-default on most Linux and macOS setups, so `vanityrig` should just work right
-after this. If it doesn't:
-
-```sh
-echo 'export PATH="$PATH:$HOME/.local/bin"' >> ~/.zshrc   # or ~/.bashrc, or your shell's rc file
-source ~/.zshrc
-```
+Downloads the right prebuilt binary for your OS/architecture from the
+[latest release](https://github.com/bytestrix/vanityrig/releases/latest) —
+no Go toolchain required. Linux and macOS only; Windows users, grab the
+`.zip` from the releases page directly.
 
 **2. Run it**
 
@@ -71,7 +64,23 @@ Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
 <details>
 <summary>Other ways to install</summary>
 
-Build from source:
+**Debian/Ubuntu (.deb) or Fedora/RHEL (.rpm):** download the package for
+your architecture from the
+[latest release](https://github.com/bytestrix/vanityrig/releases/latest)
+and install it:
+
+```sh
+sudo dpkg -i vanityrig_*_linux_amd64.deb      # Debian/Ubuntu
+sudo rpm -i vanityrig_*_linux_amd64.rpm       # Fedora/RHEL
+```
+
+**Go toolchain already installed:**
+
+```sh
+go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
+```
+
+**Build from source:**
 
 ```sh
 git clone https://github.com/bytestrix/vanityrig.git
@@ -80,11 +89,12 @@ make build
 make test
 ```
 
-Optional: install [`mkp224o`](https://github.com/cathugger/mkp224o) and put
-it on your `PATH`. VanityRig uses it automatically for prefix searches — it's
-about 180x faster per core than VanityRig's own engine for that mode. Suffix
-and anywhere searches always run on VanityRig's built-in engine, since
-`mkp224o` can't do those at all.
+Optional, for any install method: put
+[`mkp224o`](https://github.com/cathugger/mkp224o) on your `PATH`. VanityRig
+uses it automatically for prefix searches — it's about 180x faster per core
+than VanityRig's own engine for that mode. Suffix and anywhere searches
+always run on VanityRig's built-in engine, since `mkp224o` can't do those at
+all.
 
 </details>
 
@@ -177,7 +187,3 @@ something closed-source if you want, just keep the copyright notice.
 <a href="https://github.com/bytestrix/vanityrig/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=bytestrix/vanityrig" alt="Contributors" />
 </a>
-
-<p align="center">
-  Built by <a href="https://bytestrix.com">Bytestrix</a>
-</p>

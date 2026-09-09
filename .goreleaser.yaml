@@ -1,0 +1,70 @@
+version: 2
+
+project_name: vanityrig
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: vanityrig
+    main: ./cmd/vanityrig
+    binary: vanityrig
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: vanityrig
+    ids: [vanityrig]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+nfpms:
+  - id: vanityrig
+    ids: [vanityrig]
+    package_name: vanityrig
+    vendor: Bytestrix
+    homepage: https://github.com/bytestrix/vanityrig
+    maintainer: Bytestrix <support@bytestrix.com>
+    description: Vanity Tor v3 .onion address finder with prefix/suffix/anywhere matching.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+
+release:
+  github:
+    owner: bytestrix
+    name: vanityrig
+  footer: |
+    ## Install
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/bytestrix/vanityrig/main/install.sh | bash
+    ```
+
+    Or `go install github.com/bytestrix/vanityrig/cmd/vanityrig@{{ .Tag }}`,
+    or download a binary/package above for your platform.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
