@@ -10,8 +10,8 @@ provides=('vanityrig')
 conflicts=('vanityrig')
 source_x86_64=("$pkgname-$pkgver.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v$pkgver/vanityrig_linux_amd64.tar.gz")
 source_aarch64=("$pkgname-$pkgver.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v$pkgver/vanityrig_linux_arm64.tar.gz")
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('6d66e7962b601ece0fe70c7a6147e6df4661bbf901742e3cf523ac16d3d0eda3')
+sha256sums_aarch64=('79e7c8ff33de9e7e44acddee052100b0bccfb88dbb2abf4d9531f55894189842')
 
 package() {
     install -Dm755 "$srcdir/vanityrig" "$pkgdir/usr/bin/vanityrig"

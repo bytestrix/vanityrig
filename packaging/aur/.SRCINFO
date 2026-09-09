@@ -1,0 +1,16 @@
+pkgbase = vanityrig-bin
+	pkgdesc = Vanity Tor v3 .onion address finder with prefix/suffix/anywhere matching
+	pkgver = 0.1.1
+	pkgrel = 1
+	url = https://github.com/bytestrix/vanityrig
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	provides = vanityrig
+	conflicts = vanityrig
+	source_x86_64 = vanityrig-bin-0.1.1.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v0.1.1/vanityrig_linux_amd64.tar.gz
+	sha256sums_x86_64 = 6d66e7962b601ece0fe70c7a6147e6df4661bbf901742e3cf523ac16d3d0eda3
+	source_aarch64 = vanityrig-bin-0.1.1.tar.gz::https://github.com/bytestrix/vanityrig/releases/download/v0.1.1/vanityrig_linux_arm64.tar.gz
+	sha256sums_aarch64 = 79e7c8ff33de9e7e44acddee052100b0bccfb88dbb2abf4d9531f55894189842
+
+pkgname = vanityrig-bin
