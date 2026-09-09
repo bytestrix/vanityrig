@@ -18,9 +18,10 @@ import (
 
 // Mkp224o drives the external mkp224o binary.
 //
-// It is roughly 180x faster per core than the native engine, so it is the right
-// choice whenever it can be used — but it only matches prefixes, so suffix and
-// anywhere searches have to fall back to Native.
+// It is still faster per core than Symmetry (a hand-optimised C prefix-only
+// search vs. a general-purpose pure-Go engine), so it is the right choice
+// whenever it can be used — but it only matches prefixes, so suffix and
+// anywhere searches have to fall back to Symmetry.
 type Mkp224o struct {
 	// Path overrides binary lookup; empty means search PATH and the usual spots.
 	Path string
@@ -77,7 +78,7 @@ var statLine = regexp.MustCompile(`calc/sec:([0-9.]+).*?elapsed:([0-9.]+)sec`)
 
 func (m Mkp224o) Run(ctx context.Context, cfg Config) (<-chan Event, error) {
 	if cfg.Mode != vanity.MatchPrefix {
-		return nil, fmt.Errorf("mkp224o only matches prefixes; %s mode needs the native engine", cfg.Mode)
+		return nil, fmt.Errorf("mkp224o only matches prefixes; %s mode needs the built-in engine", cfg.Mode)
 	}
 	if len(cfg.Patterns) == 0 {
 		return nil, fmt.Errorf("no patterns to search for")
@@ -204,7 +205,7 @@ func (m Mkp224o) Run(ctx context.Context, cfg Config) (<-chan Event, error) {
 // note explaining the choice for the user.
 //
 // The note matters: a user asking for anywhere mode silently dropping from
-// mkp224o's throughput to the native engine's would see a wildly different
+// mkp224o's throughput to the built-in engine's would see a wildly different
 // timescale with no explanation of why.
 func Select(mode vanity.MatchMode, mkPath string) (Engine, string) {
 	mk := Mkp224o{Path: mkPath}
@@ -212,7 +213,7 @@ func Select(mode vanity.MatchMode, mkPath string) (Engine, string) {
 		if ok, _ := mk.Available(); ok {
 			return mk, "using mkp224o (fast prefix engine)"
 		}
-		return Native{}, "mkp224o not found; using the built-in engine"
+		return Symmetry{}, "mkp224o not found; using the built-in engine"
 	}
-	return Native{}, fmt.Sprintf("mkp224o cannot do %s matching; using built-in", mode)
+	return Symmetry{}, fmt.Sprintf("mkp224o cannot do %s matching; using built-in", mode)
 }

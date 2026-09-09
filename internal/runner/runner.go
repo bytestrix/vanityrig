@@ -205,8 +205,20 @@ func (r *Runner) EngineNote() string { return r.note }
 func (r *Runner) Done() <-chan struct{} { return r.done }
 
 // Run drives the search until ctx is cancelled or the stop condition is met.
+//
+// It owns a derived context for the engine rather than using ctx directly, so
+// that reaching StopAfter can stop the engine the same way an outside
+// cancellation does: this function never returns until the engine's events
+// channel has actually closed, which only happens after its goroutines have
+// fully exited. Returning early while the engine could still be mid-write is
+// exactly the kind of race that shows up as a caller (a test's t.TempDir
+// cleanup, or a second Run of the same output directory) finding a key
+// directory in a half-written state.
 func (r *Runner) Run(ctx context.Context) error {
-	events, err := r.eng.Run(ctx, engine.Config{
+	engineCtx, stopEngine := context.WithCancel(ctx)
+	defer stopEngine()
+
+	events, err := r.eng.Run(engineCtx, engine.Config{
 		Patterns:   r.cfg.Patterns,
 		Mode:       r.cfg.Mode,
 		Threads:    r.cfg.Threads,
@@ -215,6 +227,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	// drain waits for the engine to fully stop after we've decided to,
+	// discarding anything further it reports — StopAfter having been reached
+	// means we no longer want more matches, but we must not return while the
+	// engine could still be writing one.
+	drain := func() {
+		stopEngine()
+		for range events {
+		}
 	}
 
 	r.mu.Lock()
@@ -278,6 +300,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.saveState()
 
 				if r.cfg.StopAfter > 0 && count >= r.cfg.StopAfter {
+					drain()
 					return nil
 				}
 

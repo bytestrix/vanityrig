@@ -228,8 +228,8 @@ func TestNonPrefixModesRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
-		if r.EngineName() != "native" {
-			t.Errorf("%s mode picked %s, want the native engine", tc.mode, r.EngineName())
+		if r.EngineName() != "symmetry" {
+			t.Errorf("%s mode picked %s, want the symmetry engine", tc.mode, r.EngineName())
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

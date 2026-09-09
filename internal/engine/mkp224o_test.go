@@ -61,8 +61,8 @@ func TestMkp224oRefusesNonPrefixModes(t *testing.T) {
 			t.Errorf("%s mode: expected a refusal, got none", mode)
 			continue
 		}
-		if !strings.Contains(err.Error(), "native") {
-			t.Errorf("%s mode: error should point at the native engine, got: %v", mode, err)
+		if !strings.Contains(err.Error(), "built-in") {
+			t.Errorf("%s mode: error should point at the built-in engine, got: %v", mode, err)
 		}
 	}
 }
@@ -75,19 +75,19 @@ func TestEngineSelection(t *testing.T) {
 		if e.Name() != "mkp224o" {
 			t.Errorf("prefix search picked %s, want mkp224o when it is installed", e.Name())
 		}
-	} else if e.Name() != "native" {
-		t.Errorf("prefix search picked %s, want native fallback", e.Name())
+	} else if e.Name() != "symmetry" {
+		t.Errorf("prefix search picked %s, want the symmetry fallback", e.Name())
 	}
 	if note == "" {
 		t.Error("engine choice must come with an explanation for the user")
 	}
 
-	// Non-prefix modes must always land on the native engine, whatever is
+	// Non-prefix modes must always land on the symmetry engine, whatever is
 	// installed, and must say why.
 	for _, mode := range []vanity.MatchMode{vanity.MatchSuffix, vanity.MatchAnywhere} {
 		e, note := Select(mode, "")
-		if e.Name() != "native" {
-			t.Errorf("%s mode picked %s, want native", mode, e.Name())
+		if e.Name() != "symmetry" {
+			t.Errorf("%s mode picked %s, want symmetry", mode, e.Name())
 		}
 		if !strings.Contains(note, "mkp224o") {
 			t.Errorf("%s mode: note should explain why mkp224o is not used, got %q", mode, note)
@@ -115,18 +115,21 @@ func TestMkp224oEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Ranging to completion after cancel (rather than breaking out early) matters:
+	// breaking early races the deferred t.TempDir() cleanup against mkp224o's
+	// subprocess still shutting down and possibly still writing, which is
+	// exactly the "directory not empty" flake this loop used to produce.
 	var match *Match
 	for ev := range events {
 		switch ev.Kind {
 		case EventMatch:
-			m := ev.Match
-			match = &m
-			cancel()
+			if match == nil {
+				m := ev.Match
+				match = &m
+				cancel()
+			}
 		case EventError:
 			t.Errorf("engine error: %v", ev.Err)
-		}
-		if match != nil {
-			break
 		}
 	}
 

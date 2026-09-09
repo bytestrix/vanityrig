@@ -91,10 +91,10 @@ make test
 
 Optional, for any install method: put
 [`mkp224o`](https://github.com/cathugger/mkp224o) on your `PATH`. VanityRig
-uses it automatically for prefix searches — it's about 180x faster per core
-than VanityRig's own engine for that mode. Suffix and anywhere searches
-always run on VanityRig's built-in engine, since `mkp224o` can't do those at
-all.
+uses it automatically for prefix searches — it's roughly 8x faster per core
+than VanityRig's own engine for that mode (measured, not estimated — see
+`internal/engine/bench_test.go`). Suffix and anywhere searches always run on
+VanityRig's built-in engine, since `mkp224o` can't do those at all.
 
 </details>
 
@@ -162,7 +162,11 @@ input.
   its face rather than hidden behind a verdict.
 - **Has its own search engine**, so suffix and anywhere-position matching
   actually run instead of being advertised and silently unsupported. Keys
-  are byte-identical to `mkp224o`'s output, verified in the test suite.
+  are byte-identical to `mkp224o`'s output, verified in the test suite. It
+  batches the expensive part of key generation (a modular field inversion)
+  across many candidates at once instead of paying it per key, which is
+  roughly 11x faster than the straightforward version of the same engine —
+  measured, not estimated.
 
 ---
 

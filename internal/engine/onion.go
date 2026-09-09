@@ -69,6 +69,22 @@ func expandSecret(priv ed25519.PrivateKey) []byte {
 // afterwards: this file is the permanent identity of a site, and a window where
 // it sits world-readable is a window too many.
 func WriteKeyFiles(dir string, pub ed25519.PublicKey, priv ed25519.PrivateKey) error {
+	var expanded [64]byte
+	copy(expanded[:], expandSecret(priv))
+	return WriteKeyFilesExpanded(dir, pub, expanded)
+}
+
+// WriteKeyFilesExpanded is WriteKeyFiles for a caller that already has the
+// 64-byte expanded secret key (clamped scalar || nonce prefix) rather than a
+// crypto/ed25519 seed-based PrivateKey.
+//
+// This exists for engines that derive the scalar directly (never going
+// through crypto/ed25519.GenerateKey's SHA-512-from-seed path at all) —
+// expandSecret must never run on a scalar it didn't produce itself, since
+// hashing an already-derived scalar through SHA-512 again would silently
+// write a secret key with no relationship to the public key it's paired
+// with.
+func WriteKeyFilesExpanded(dir string, pub ed25519.PublicKey, expanded [64]byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create key directory: %w", err)
 	}
@@ -80,7 +96,7 @@ func WriteKeyFiles(dir string, pub ed25519.PublicKey, priv ed25519.PrivateKey) e
 	}{
 		{"hostname", []byte(addr + ".onion\n")},
 		{"hs_ed25519_public_key", append(append([]byte{}, publicKeyHeader...), pub...)},
-		{"hs_ed25519_secret_key", append(append([]byte{}, secretKeyHeader...), expandSecret(priv)...)},
+		{"hs_ed25519_secret_key", append(append([]byte{}, secretKeyHeader...), expanded[:]...)},
 	}
 	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o600); err != nil {
