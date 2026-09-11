@@ -263,23 +263,29 @@ func TestNoLineExceedsTerminalWidth(t *testing.T) {
 // field instead of failing loudly — so pin the two together here instead of
 // trusting they stay in sync by construction.
 func TestMouseRowsMatchRenderedFields(t *testing.T) {
-	s := NewSetup(SetupConfig{})
-	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	lines := strings.Split(s.View(), "\n")
+	// Every width from just below the two-column threshold up through a wide
+	// terminal — this is exactly the class of bug already found once
+	// (rows shifting because a field silently wrapped at one particular
+	// width), so a single sample width isn't enough to trust it stays fixed.
+	for _, width := range []int{twoColumnMinWidth - 1, twoColumnMinWidth, 115, 120, 130, 145} {
+		s := NewSetup(SetupConfig{})
+		s.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+		lines := strings.Split(s.View(), "\n")
 
-	want := map[int]string{
-		0: "Word(s)",
-		1: "Save to",
-		2: "Match mode",
-		3: "CPU share",
-	}
-	for offset, label := range want {
-		row := fieldsFirstRow + offset
-		if row >= len(lines) {
-			t.Fatalf("row %d (for %q) is beyond the rendered output (%d lines)", row, label, len(lines))
+		want := map[int]string{
+			0: "Word(s)",
+			1: "Save to",
+			2: "Match mode",
+			3: "CPU share",
 		}
-		if !strings.Contains(lines[row], label) {
-			t.Errorf("row %d: expected %q, got %q", row, label, lines[row])
+		for offset, label := range want {
+			row := fieldsFirstRow + offset
+			if row >= len(lines) {
+				t.Fatalf("width %d: row %d (for %q) is beyond the rendered output (%d lines)", width, row, label, len(lines))
+			}
+			if !strings.Contains(lines[row], label) {
+				t.Errorf("width %d: row %d: expected %q, got %q", width, row, label, lines[row])
+			}
 		}
 	}
 }
@@ -287,11 +293,12 @@ func TestMouseRowsMatchRenderedFields(t *testing.T) {
 func TestClickFocusesAndActsOnField(t *testing.T) {
 	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
 	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	before := s.mode
 
-	// Left-click on the Match mode row (offset 2): focuses it and cycles
-	// forward, exactly as pressing right-arrow after tabbing there would.
-	click := tea.MouseMsg{X: 20, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	// A click on the Match mode row, but not on any specific option (e.g.
+	// the empty space after "anywhere"), still focuses it and cycles —
+	// clicking imprecisely shouldn't be a no-op.
+	before := s.mode
+	click := tea.MouseMsg{X: 200, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
 	s.Update(click)
 
 	if s.focus != fieldMode {
@@ -301,7 +308,7 @@ func TestClickFocusesAndActsOnField(t *testing.T) {
 		t.Error("clicking to change the mode should fix it, same as an arrow key would")
 	}
 	if s.mode == before {
-		t.Error("left-click on Match mode should cycle it forward")
+		t.Error("a click on the row that misses every option should still cycle it")
 	}
 
 	// Right-click on CPU share (offset 3) should lower the percentage.
@@ -312,6 +319,39 @@ func TestClickFocusesAndActsOnField(t *testing.T) {
 	}
 	if s.percent >= beforePercent {
 		t.Errorf("right-click on CPU share should lower it: before=%d after=%d", beforePercent, s.percent)
+	}
+}
+
+// The whole point of exact hit-testing is that clicking "suffix" selects
+// suffix regardless of what was selected before — a row-level cycle would
+// get this right only by coincidence. Verify each option's computed span
+// against the actual rendered text before trusting the span math, then
+// click within each and confirm it selects exactly that mode.
+func TestMouseClickSelectsExactModeOption(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
+	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	lines := strings.Split(s.View(), "\n")
+	// lipgloss.SetColorProfile(0) (set in init) keeps this plain text, with
+	// no ANSI codes to strip before comparing columns.
+	modeLine := lines[fieldsFirstRow+2]
+
+	for _, span := range modeOptionSpans() {
+		wantText := string(span.Mode)
+		if !strings.Contains(modeLine[modeRowValueCol:], wantText) {
+			t.Fatalf("mode %q not found in rendered row at the expected region: %q", wantText, modeLine)
+		}
+
+		s.mode = "" // force a change so a no-op click can't accidentally pass
+		s.modeIsFixed = false
+		mid := (span.Start + span.End) / 2
+		s.Update(tea.MouseMsg{
+			X: modeRowValueCol + mid, Y: fieldsFirstRow + 2,
+			Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		})
+		if s.mode != span.Mode {
+			t.Errorf("click at column %d (span %d-%d) selected %q, want %q",
+				modeRowValueCol+mid, span.Start, span.End, s.mode, span.Mode)
+		}
 	}
 }
 

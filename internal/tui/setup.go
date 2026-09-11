@@ -64,10 +64,13 @@ const repoURL = "https://github.com/bytestrix/vanityrig"
 // twoColumnMinWidth is the narrowest total width the two-column layout is
 // allowed at. It isn't a taste choice: below it, the configuration column's
 // share of the width leaves less room than the "Match mode" row's content
-// needs, so that row silently word-wraps and shifts every row below it down
-// by one — TestMouseRowsMatchRenderedFields caught this at 100. 125 leaves
-// real margin above the ~102 where wrapping starts.
-const twoColumnMinWidth = 125
+// needs (measured at 56 columns focused, +4 for border/padding = 60), so
+// that row silently word-wraps and shifts every row below it down by one —
+// TestMouseRowsMatchRenderedFields caught this once already. At the 58%
+// config share used below, 60/0.58 ≈ 105 is where wrapping starts; 110
+// leaves a small margin above that without pushing the threshold past what
+// a common ~110-120 column terminal window actually is.
+const twoColumnMinWidth = 110
 
 // SetupConfig seeds the screen with whatever was already decided on the
 // command line, so `vanityrig word` doesn't ask a question it already has
@@ -237,13 +240,20 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // can't silently break clicking without a test noticing.
 const fieldsFirstRow = 5
 
+// modeRowValueCol is the absolute column (matching tea.MouseEvent.X) where
+// the Match mode row's options begin: the panel's border (1) and padding
+// (1), then the row's own "  " + 14-column label + " " prefix (17).
+// TestMouseClickSelectsExactModeOption checks a click at each option's
+// computed span against the real rendered text, so this can't silently
+// drift from modeRow's actual layout.
+const modeRowValueCol = 1 + 1 + 17
+
 // handleMouse lets the configuration panel be driven with the mouse as well
 // as the keyboard, since a screen laid out in visually distinct clickable-
-// looking sections should actually respond to clicks. Precise per-option
-// hit-testing (e.g. clicking exactly on "suffix") isn't attempted — that
-// column math would be fragile against every width/focus-state variation —
-// so a click focuses the row under the cursor, and for Match mode / CPU
-// share also nudges the value the same way an arrow key would.
+// looking sections should actually respond to clicks. Match mode supports
+// clicking the specific option under the cursor, not just cycling the row —
+// a row-level-only cycle looks broken the moment someone clicks "suffix"
+// while "anywhere" is selected and lands on the wrong thing.
 func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
 	if s.phase != phaseSetup || m.Action != tea.MouseActionPress {
 		return s, nil
@@ -274,7 +284,11 @@ func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
 	switch target {
 	case fieldMode:
 		s.modeIsFixed = true
-		s.mode = cycleMode(s.mode, forward)
+		if picked, ok := modeAt(m.X - modeRowValueCol); ok {
+			s.mode = picked
+		} else {
+			s.mode = cycleMode(s.mode, forward)
+		}
 	case fieldThreads:
 		delta := 10
 		if !forward {
@@ -668,41 +682,92 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	return panel("⚙ Configuration", width, minBodyLines, strings.TrimRight(b.String(), "\n"), colConfig)
 }
 
+// modeOptions is the canonical option order and text for the match-mode
+// selector — shared by modeRow (what's drawn) and modeOptionSpans (where a
+// click on it lands), so the two can't quietly drift apart the way a
+// hand-duplicated column calculation would.
+var modeOptions = []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere}
+
+func modeOptionText(m vanity.MatchMode, selected bool) string {
+	mark := "( )"
+	if selected {
+		mark = "(•)"
+	}
+	return mark + " " + string(m)
+}
+
 func modeRow(cur vanity.MatchMode, focused bool) string {
 	var parts []string
-	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
-		mark := "( )"
+	for _, m := range modeOptions {
 		style := stLabel
 		if m == cur {
-			mark = "(•)"
 			style = stValue
 		}
-		parts = append(parts, style.Render(mark+" "+string(m)))
+		parts = append(parts, style.Render(modeOptionText(m, m == cur)))
 	}
-	line := strings.Join(parts, "  ")
+	line := strings.Join(parts, " ")
 	if focused {
 		line += stHint.Render("  ←/→")
 	}
 	return line
 }
 
+// modeOptionSpan is one clickable option's column range within its row,
+// [Start, End), using the same unstyled text modeRow renders (mark width is
+// identical whether selected or not, so this doesn't need to know which
+// mode is current).
+type modeOptionSpan struct {
+	Mode       vanity.MatchMode
+	Start, End int
+}
+
+func modeOptionSpans() []modeOptionSpan {
+	var spans []modeOptionSpan
+	col := 0
+	for i, m := range modeOptions {
+		if i > 0 {
+			col++ // the single-space separator modeRow joins options with
+		}
+		w := len([]rune(modeOptionText(m, false)))
+		spans = append(spans, modeOptionSpan{Mode: m, Start: col, End: col + w})
+		col += w
+	}
+	return spans
+}
+
+// modeAt returns the mode whose option text contains column col (relative to
+// the start of the options, i.e. already offset by modeRowValueCol), or
+// ok=false if col falls outside all three — clicking the row's label, for
+// instance, rather than any specific option.
+func modeAt(col int) (m vanity.MatchMode, ok bool) {
+	if col < 0 {
+		return "", false
+	}
+	for _, span := range modeOptionSpans() {
+		if col >= span.Start && col < span.End {
+			return span.Mode, true
+		}
+	}
+	return "", false
+}
+
+// cpuRow's core count intentionally isn't repeated here — the Resources
+// panel's own note line already says it — so this row stays short enough
+// that Match mode, not this one, is what decides how narrow the two-column
+// layout can safely go.
 func cpuRow(percent int) string {
-	const barWidth = 18
+	const barWidth = 14
 	filled := int(float64(barWidth) * float64(percent) / 100)
 	bar := lipgloss.NewStyle().Foreground(colConfig).Render(strings.Repeat("█", filled)) +
 		stLabel.Render(strings.Repeat("░", barWidth-filled))
-	cores := int(math.Round(float64(runtime.NumCPU()) * float64(percent) / 100))
-	if cores < 1 {
-		cores = 1
-	}
-	return fmt.Sprintf("%s  %3d%%  (%d/%d cores)", bar, percent, cores, runtime.NumCPU())
+	return fmt.Sprintf("%s  %3d%%", bar, percent)
 }
 
 // renderResources shows the CPU share actually configured (never invented
 // OS telemetry we don't measure) and marks GPU plainly as unavailable,
 // rather than a fake utilization number for hardware nothing here uses.
 func (s *Setup) renderResources(width int) string {
-	const barWidth = 22
+	const barWidth = 14
 	percent := s.percent
 	if s.phase == phaseSetup {
 		percent = 0 // nothing is actually running yet
@@ -722,11 +787,11 @@ func (s *Setup) renderResources(width int) string {
 	// actually hold rather than trust the string is always short enough.
 	inner := width - 4
 	note := fmt.Sprintf("using %d of %d cores · GPU not available yet", cores, runtime.NumCPU())
-	note = truncateTo(note, inner-2)
+	note = truncateTo(note, inner-4)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  %-16s %s  %3d%%\n", fmt.Sprintf("CPU (%d threads)", runtime.NumCPU()), cpuBar, percent))
-	b.WriteString(fmt.Sprintf("  %-16s %s  %s\n", "GPU", gpuBar, stLabel.Render("n/a")))
+	b.WriteString(fmt.Sprintf("  %-4s %s  %3d%%\n", "CPU", cpuBar, percent))
+	b.WriteString(fmt.Sprintf("  %-4s %s  %s\n", "GPU", gpuBar, stLabel.Render("n/a")))
 	b.WriteString(stLabel.Render("  " + note))
 	return panel("📊 Resources", width, 0, strings.TrimRight(b.String(), "\n"), colResources)
 }
@@ -800,14 +865,31 @@ func roughElapsed(d time.Duration) string {
 }
 
 func (s *Setup) renderProgressBar(width int) string {
-	label := stLabel.Render("Type a word above and press enter to begin.")
+	plain := "Type a word above and press enter to begin."
 	frac := 0.0
-	if s.phase != phaseSetup {
+	if s.phase == phaseSetup {
+		// Reinforces Statistics' per-mode breakdown with the one number that
+		// actually matters once a mode is chosen: how long *this* search,
+		// as currently configured, is expected to take — live as you type
+		// or change the mode, not just once you've already committed to it.
+		if pats := s.patterns(); len(pats) > 0 {
+			est := vanity.NewEstimate(pats, s.mode, s.rate)
+			eta := "impossible in this mode"
+			if est.Probability > 0 {
+				eta = "typically " + humanDur(est.P50)
+			}
+			plain = fmt.Sprintf("Ready to search %s for %q — %s. Press enter to begin.",
+				s.mode, strings.Join(pats, ", "), eta)
+		}
+	} else {
 		if s.snap.Estimate.Probability > 0 {
 			frac = 1 - expNeg(s.snap.Estimate.Probability*s.snap.KeysTried)
 		}
-		label = fmt.Sprintf("Searching for %s with %q", s.mode, strings.Join(s.patterns(), ", "))
+		plain = fmt.Sprintf("Searching for %s with %q", s.mode, strings.Join(s.patterns(), ", "))
 	}
+	// Truncate the plain text before styling it — truncating an
+	// already-ANSI-styled string risks cutting mid-escape-sequence.
+	label := stLabel.Render(truncateTo(plain, width-4))
 
 	barWidth := width - 12
 	if barWidth < 10 {
