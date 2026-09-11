@@ -28,7 +28,7 @@ func runInteractive(patterns []string, out string, mode vanity.MatchMode, rate f
 		Version:    version,
 	})
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "dashboard unavailable:", err)
 		return 1

@@ -61,6 +61,14 @@ var (
 
 const repoURL = "https://github.com/bytestrix/vanityrig"
 
+// twoColumnMinWidth is the narrowest total width the two-column layout is
+// allowed at. It isn't a taste choice: below it, the configuration column's
+// share of the width leaves less room than the "Match mode" row's content
+// needs, so that row silently word-wraps and shifts every row below it down
+// by one — TestMouseRowsMatchRenderedFields caught this at 100. 125 leaves
+// real margin above the ~102 where wrapping starts.
+const twoColumnMinWidth = 125
+
 // SetupConfig seeds the screen with whatever was already decided on the
 // command line, so `vanityrig word` doesn't ask a question it already has
 // the answer to — those fields just start pre-filled and still editable.
@@ -215,6 +223,64 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return s.handleKey(msg)
+
+	case tea.MouseMsg:
+		return s.handleMouse(tea.MouseEvent(msg))
+	}
+	return s, nil
+}
+
+// fieldsFirstRow is the row (0-based, matching tea.MouseEvent.Y) of the first
+// configuration field — two header lines, a blank line, the panel's top
+// border, and its title line. TestMouseRowsMatchRenderedFields checks this
+// against the real rendered output, so a layout change that moves this
+// can't silently break clicking without a test noticing.
+const fieldsFirstRow = 5
+
+// handleMouse lets the configuration panel be driven with the mouse as well
+// as the keyboard, since a screen laid out in visually distinct clickable-
+// looking sections should actually respond to clicks. Precise per-option
+// hit-testing (e.g. clicking exactly on "suffix") isn't attempted — that
+// column math would be fragile against every width/focus-state variation —
+// so a click focuses the row under the cursor, and for Match mode / CPU
+// share also nudges the value the same way an arrow key would.
+func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
+	if s.phase != phaseSetup || m.Action != tea.MouseActionPress {
+		return s, nil
+	}
+	if m.Button != tea.MouseButtonLeft && m.Button != tea.MouseButtonRight {
+		return s, nil
+	}
+
+	var target setupField
+	switch m.Y - fieldsFirstRow {
+	case 0:
+		target = fieldWord
+	case 1:
+		target = fieldOutDir
+	case 2:
+		target = fieldMode
+	case 3:
+		target = fieldThreads
+	default:
+		return s, nil
+	}
+
+	s.blurCurrent()
+	s.focus = target
+	s.focusCurrent()
+
+	forward := m.Button == tea.MouseButtonLeft
+	switch target {
+	case fieldMode:
+		s.modeIsFixed = true
+		s.mode = cycleMode(s.mode, forward)
+	case fieldThreads:
+		delta := 10
+		if !forward {
+			delta = -10
+		}
+		s.percent = clampPercent(s.percent + delta)
 	}
 	return s, nil
 }
@@ -423,12 +489,23 @@ func (s *Setup) View() string {
 	b.WriteString(s.renderHeader(width))
 	b.WriteString("\n\n")
 
-	if width >= 100 {
-		left := s.renderConfig(width*58/100 - 1)
-		right := lipgloss.JoinVertical(lipgloss.Left, s.renderResources(width-width*58/100), s.renderStats(width-width*58/100))
+	if width >= twoColumnMinWidth {
+		rightW := width - width*58/100
+		resources := s.renderResources(rightW)
+		stats := s.renderStats(rightW)
+		right := lipgloss.JoinVertical(lipgloss.Left, resources, stats)
+
+		// Match the configuration panel's height to the combined right
+		// column, so their bottom borders line up instead of the shorter
+		// one trailing off into blank space — the "why doesn't this line
+		// up" complaint a plain lipgloss.JoinHorizontal leaves on the table.
+		rightLines := strings.Count(resources, "\n") + strings.Count(stats, "\n") + 2
+		const panelOverhead = 3 // top border + title line + bottom border
+		left := s.renderConfig(width*58/100-1, rightLines-panelOverhead)
+
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right))
 	} else {
-		b.WriteString(s.renderConfig(width))
+		b.WriteString(s.renderConfig(width, 0))
 		b.WriteString("\n")
 		b.WriteString(s.renderResources(width))
 		b.WriteString("\n")
@@ -518,11 +595,22 @@ func (s *Setup) renderFooter(width int) string {
 	return styledLeft
 }
 
-func panel(title string, width int, body string, accent lipgloss.AdaptiveColor) string {
+// panel wraps body in a titled, coloured border. minBodyLines pads the body
+// with blank lines (inside the border, not after it) up to that count — used
+// to match the configuration panel's height to the resources+statistics
+// column beside it, so the two columns' bottom borders align instead of one
+// trailing off into blank space below a shorter box.
+func panel(title string, width, minBodyLines int, body string, accent lipgloss.AdaptiveColor) string {
 	inner := width - 4
 	if inner < 20 {
 		inner = 20
 	}
+	lines := strings.Split(body, "\n")
+	for len(lines) < minBodyLines {
+		lines = append(lines, "")
+	}
+	body = strings.Join(lines, "\n")
+
 	style := lipgloss.NewStyle().
 		Border(panelBorder).
 		BorderForeground(accent).
@@ -532,7 +620,7 @@ func panel(title string, width int, body string, accent lipgloss.AdaptiveColor) 
 	return style.Render(titled + "\n" + body)
 }
 
-func (s *Setup) renderConfig(width int) string {
+func (s *Setup) renderConfig(width, minBodyLines int) string {
 	editable := s.phase == phaseSetup
 	row := func(label, value string, focused bool) string {
 		l := stFieldLabel.Render(pad(label, 14))
@@ -577,7 +665,7 @@ func (s *Setup) renderConfig(width int) string {
 		b.WriteString("\n  " + stErr.Render("! "+s.startErr))
 	}
 
-	return panel("⚙ Configuration", width, strings.TrimRight(b.String(), "\n"), colConfig)
+	return panel("⚙ Configuration", width, minBodyLines, strings.TrimRight(b.String(), "\n"), colConfig)
 }
 
 func modeRow(cur vanity.MatchMode, focused bool) string {
@@ -640,14 +728,14 @@ func (s *Setup) renderResources(width int) string {
 	b.WriteString(fmt.Sprintf("  %-16s %s  %3d%%\n", fmt.Sprintf("CPU (%d threads)", runtime.NumCPU()), cpuBar, percent))
 	b.WriteString(fmt.Sprintf("  %-16s %s  %s\n", "GPU", gpuBar, stLabel.Render("n/a")))
 	b.WriteString(stLabel.Render("  " + note))
-	return panel("📊 Resources", width, strings.TrimRight(b.String(), "\n"), colResources)
+	return panel("📊 Resources", width, 0, strings.TrimRight(b.String(), "\n"), colResources)
 }
 
 func (s *Setup) renderStats(width int) string {
 	if s.phase == phaseSetup {
-		return panel("📈 Statistics", width, s.renderPreview(), colStats)
+		return panel("📈 Statistics", width, 0, s.renderPreview(), colStats)
 	}
-	return panel("📈 Statistics", width, s.renderLiveStats(), colStats)
+	return panel("📈 Statistics", width, 0, s.renderLiveStats(), colStats)
 }
 
 // renderPreview shows the same prefix/suffix/anywhere cost comparison the
@@ -730,7 +818,7 @@ func (s *Setup) renderProgressBar(width int) string {
 		stLabel.Render(strings.Repeat("░", barWidth-filled))
 
 	body := label + "\n" + bar + fmt.Sprintf("  %3.0f%%", frac*100)
-	return panel("◆ Progress", width, body, colProgress)
+	return panel("◆ Progress", width, 0, body, colProgress)
 }
 
 func (s *Setup) renderLogs(width int) string {
@@ -744,7 +832,7 @@ func (s *Setup) renderLogs(width int) string {
 		}
 		body = strings.Join(lines, "\n")
 	}
-	return panel("📜 Logs", width, body, colLogs)
+	return panel("📜 Logs", width, 0, body, colLogs)
 }
 
 // styleLogLine colours the [TAG] token so MATCH and errors stand out from

@@ -257,3 +257,76 @@ func TestNoLineExceedsTerminalWidth(t *testing.T) {
 		}
 	}
 }
+
+// handleMouse hardcodes which row is which field. If renderConfig's row
+// order ever changes, clicking would silently start targeting the wrong
+// field instead of failing loudly — so pin the two together here instead of
+// trusting they stay in sync by construction.
+func TestMouseRowsMatchRenderedFields(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	lines := strings.Split(s.View(), "\n")
+
+	want := map[int]string{
+		0: "Word(s)",
+		1: "Save to",
+		2: "Match mode",
+		3: "CPU share",
+	}
+	for offset, label := range want {
+		row := fieldsFirstRow + offset
+		if row >= len(lines) {
+			t.Fatalf("row %d (for %q) is beyond the rendered output (%d lines)", row, label, len(lines))
+		}
+		if !strings.Contains(lines[row], label) {
+			t.Errorf("row %d: expected %q, got %q", row, label, lines[row])
+		}
+	}
+}
+
+func TestClickFocusesAndActsOnField(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
+	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	before := s.mode
+
+	// Left-click on the Match mode row (offset 2): focuses it and cycles
+	// forward, exactly as pressing right-arrow after tabbing there would.
+	click := tea.MouseMsg{X: 20, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	s.Update(click)
+
+	if s.focus != fieldMode {
+		t.Errorf("click on Match mode row should focus it, got focus=%v", s.focus)
+	}
+	if !s.modeIsFixed {
+		t.Error("clicking to change the mode should fix it, same as an arrow key would")
+	}
+	if s.mode == before {
+		t.Error("left-click on Match mode should cycle it forward")
+	}
+
+	// Right-click on CPU share (offset 3) should lower the percentage.
+	beforePercent := s.percent
+	s.Update(tea.MouseMsg{X: 20, Y: fieldsFirstRow + 3, Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	if s.focus != fieldThreads {
+		t.Errorf("click on CPU share row should focus it, got focus=%v", s.focus)
+	}
+	if s.percent >= beforePercent {
+		t.Errorf("right-click on CPU share should lower it: before=%d after=%d", beforePercent, s.percent)
+	}
+}
+
+func TestMouseIgnoredOnceRunning(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"ab"}, OutDir: t.TempDir()})
+	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	press(s, "enter")
+	if s.phase != phaseRunning {
+		t.Fatal("expected the search to start")
+	}
+	before := s.mode
+
+	s.Update(tea.MouseMsg{X: 20, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if s.mode != before {
+		t.Error("clicking after the search has started must not change settings")
+	}
+	s.cancel()
+}
