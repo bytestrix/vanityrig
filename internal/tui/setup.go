@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -101,8 +102,9 @@ type Setup struct {
 	enginePath string
 	version    string
 
-	focus setupField
-	phase setupPhase
+	focus   setupField
+	editing bool // true while the focused text field is actively receiving keystrokes
+	phase   setupPhase
 
 	width, height int
 	quitting      bool
@@ -196,10 +198,19 @@ func (s *Setup) recomputeMode() {
 	if len(pats) == 0 {
 		return
 	}
-	cmp := vanity.CompareModes(pats, s.rate)
+	cmp := vanity.CompareModes(pats, s.effectiveRate())
 	if cmp.Best != "" {
 		s.mode = cmp.Best
 	}
+}
+
+// effectiveRate is s.rate (the assumed full-CPU throughput) scaled by the
+// configured CPU share, so every estimate shown actually reflects the
+// thread count the search will run with — using the unscaled rate
+// everywhere, regardless of what CPU share was configured, was a real bug:
+// turning the slider down changed nothing on screen.
+func (s *Setup) effectiveRate() float64 {
+	return s.rate * float64(s.percent) / 100
 }
 
 func (s *Setup) Init() tea.Cmd { return tick() }
@@ -240,20 +251,10 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // can't silently break clicking without a test noticing.
 const fieldsFirstRow = 5
 
-// modeRowValueCol is the absolute column (matching tea.MouseEvent.X) where
-// the Match mode row's options begin: the panel's border (1) and padding
-// (1), then the row's own "  " + 14-column label + " " prefix (17).
-// TestMouseClickSelectsExactModeOption checks a click at each option's
-// computed span against the real rendered text, so this can't silently
-// drift from modeRow's actual layout.
-const modeRowValueCol = 1 + 1 + 17
-
 // handleMouse lets the configuration panel be driven with the mouse as well
-// as the keyboard, since a screen laid out in visually distinct clickable-
-// looking sections should actually respond to clicks. Match mode supports
-// clicking the specific option under the cursor, not just cycling the row —
-// a row-level-only cycle looks broken the moment someone clicks "suffix"
-// while "anywhere" is selected and lands on the wrong thing.
+// as the keyboard: a click focuses the row under the cursor, and for the
+// cycling fields (Match mode, CPU share) also nudges the value the same way
+// an arrow key would — left-click forward, right-click back.
 func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
 	if s.phase != phaseSetup || m.Action != tea.MouseActionPress {
 		return s, nil
@@ -277,18 +278,21 @@ func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
 	}
 
 	s.blurCurrent()
+	s.editing = false
 	s.focus = target
-	s.focusCurrent()
 
 	forward := m.Button == tea.MouseButtonLeft
+	var cmd tea.Cmd
 	switch target {
+	case fieldWord, fieldOutDir:
+		// A click on a text field is naturally "start editing it", the same
+		// as pressing Enter there — unlike Match mode/CPU share, there's no
+		// useful non-editing action a click could take on it instead.
+		s.editing = true
+		cmd = s.focusCurrent()
 	case fieldMode:
 		s.modeIsFixed = true
-		if picked, ok := modeAt(m.X - modeRowValueCol); ok {
-			s.mode = picked
-		} else {
-			s.mode = cycleMode(s.mode, forward)
-		}
+		s.mode = cycleMode(s.mode, forward)
 	case fieldThreads:
 		delta := 10
 		if !forward {
@@ -296,58 +300,92 @@ func (s *Setup) handleMouse(m tea.MouseEvent) (tea.Model, tea.Cmd) {
 		}
 		s.percent = clampPercent(s.percent + delta)
 	}
-	return s, nil
+	return s, cmd
 }
 
+// handleKey implements two distinct interaction modes, matching the
+// reference layout's own footer ("[Enter] Edit" as separate from
+// navigation): while s.editing is true, every keystroke goes to the
+// focused text field — including letters that double as shortcuts, like
+// "s" or "q" — since nothing is more broken than being unable to type a
+// word containing those letters. Enter/Esc leave edit mode. Everywhere
+// else, single-letter shortcuts (start/stop, quit) are live.
 func (s *Setup) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if s.phase != phaseSetup {
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			s.quitting = true
-			if s.cancel != nil {
-				s.cancel()
-			}
-			return s, tea.Quit
+	key := msg.String()
+
+	if s.editing {
+		if key == "enter" || key == "esc" {
+			s.editing = false
+			s.blurCurrent()
+			return s, nil
 		}
+		return s.routeToFocused(msg)
+	}
+
+	switch key {
+	case "ctrl+c", "q":
+		s.quitting = true
+		if s.cancel != nil {
+			s.cancel() // stop cleanly rather than leaving the engine running past exit
+		}
+		return s, tea.Quit
+
+	case "s":
+		switch s.phase {
+		case phaseSetup:
+			return s.tryStart()
+		case phaseRunning:
+			s.stopSearch()
+		case phaseFinished:
+			s.rearm()
+		}
+		return s, nil
+
+	case "l":
+		s.logLines = nil
 		return s, nil
 	}
 
-	switch msg.String() {
-	case "ctrl+c", "esc":
+	if s.phase != phaseSetup {
+		return s, nil // navigation/editing only make sense before or between searches
+	}
+
+	switch key {
+	case "esc":
 		s.quitting = true
 		return s, tea.Quit
 
-	case "tab", "shift+tab", "down", "up":
-		s.blurCurrent()
-		if msg.String() == "shift+tab" || msg.String() == "up" {
-			s.focus = (s.focus - 1 + fieldCount) % fieldCount
-		} else {
-			s.focus = (s.focus + 1) % fieldCount
-		}
-		s.focusCurrent()
+	case "tab", "down":
+		s.focus = (s.focus + 1) % fieldCount
+		return s, nil
+
+	case "shift+tab", "up":
+		s.focus = (s.focus - 1 + fieldCount) % fieldCount
 		return s, nil
 
 	case "left", "right":
 		switch s.focus {
 		case fieldMode:
 			s.modeIsFixed = true
-			s.mode = cycleMode(s.mode, msg.String() == "right")
+			s.mode = cycleMode(s.mode, key == "right")
 		case fieldThreads:
 			delta := 10
-			if msg.String() == "left" {
+			if key == "left" {
 				delta = -10
 			}
 			s.percent = clampPercent(s.percent + delta)
-		default:
-			return s.routeToFocused(msg)
 		}
 		return s, nil
 
 	case "enter":
+		if s.focus == fieldWord || s.focus == fieldOutDir {
+			s.editing = true
+			return s, s.focusCurrent()
+		}
 		return s.tryStart()
 	}
 
-	return s.routeToFocused(msg)
+	return s, nil
 }
 
 func (s *Setup) routeToFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -371,13 +409,35 @@ func (s *Setup) blurCurrent() {
 	}
 }
 
-func (s *Setup) focusCurrent() {
+func (s *Setup) focusCurrent() tea.Cmd {
 	switch s.focus {
 	case fieldWord:
-		s.word.Focus()
+		return s.word.Focus()
 	case fieldOutDir:
-		s.outDir.Focus()
+		return s.outDir.Focus()
 	}
+	return nil
+}
+
+// stopSearch cancels a running search without quitting the program — Done()
+// firing on the next tick transitions the phase to phaseFinished the same
+// way a natural stop condition would, so the dashboard's final state (logs,
+// stats, matches so far) stays on screen for review instead of the only way
+// to stop being to quit and lose that view.
+func (s *Setup) stopSearch() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+}
+
+// rearm returns to the setup phase after a stop, so the configuration can be
+// reviewed or changed and the search started again. runner.New resumes from
+// the persisted cumulative count automatically when the pattern and mode
+// are unchanged, so restarting doesn't lose prior progress.
+func (s *Setup) rearm() {
+	s.phase = phaseSetup
+	s.finished = false
+	s.appendLog("INFO", "ready to search again — press s to start")
 }
 
 func cycleMode(cur vanity.MatchMode, forward bool) vanity.MatchMode {
@@ -562,10 +622,18 @@ func (s *Setup) renderHeader(width int) string {
 // footer returns the keybinding hints, shortest first, so a narrow terminal
 // can drop the later (less essential) ones instead of overflowing.
 func (s *Setup) footer() []string {
-	if s.phase != phaseSetup {
-		return []string{"q stop"}
+	if s.editing {
+		return []string{"enter/esc done editing"}
 	}
-	return []string{"enter start", "q quit", "←/→ change", "↑↓/tab move"}
+
+	switch s.phase {
+	case phaseRunning:
+		return []string{"s stop", "q quit", "l clear log"}
+	case phaseFinished:
+		return []string{"s restart", "q quit", "l clear log"}
+	default:
+		return []string{"s start", "enter edit", "q quit", "←/→ change", "↑↓/tab move"}
+	}
 }
 
 func (s *Setup) renderFooter(width int) string {
@@ -655,12 +723,29 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	s.word.Width = fieldWidth
 	s.outDir.Width = fieldWidth
 
-	wordView := s.word.View()
-	if !editable {
+	// The live textinput view (with its blinking cursor) only makes sense
+	// while actively editing that field — otherwise a tabbed-to-but-not-yet-
+	// entered field would show a cursor even though typing a letter right
+	// now triggers a global shortcut (s/q/l), not text entry, which would be
+	// misleading. So navigating shows a static rendering of the value, and
+	// only Enter (or a click) on the field switches it to the live view.
+	wordEditing := editable && s.editing && s.focus == fieldWord
+	outEditing := editable && s.editing && s.focus == fieldOutDir
+
+	var wordView string
+	switch {
+	case wordEditing:
+		wordView = s.word.View()
+	case s.word.Value() != "":
 		wordView = stValue.Render(strings.Join(s.patterns(), ", "))
+	default:
+		wordView = stLabel.Render(s.word.Placeholder)
 	}
-	outView := s.outDir.View()
-	if !editable {
+
+	var outView string
+	if outEditing {
+		outView = s.outDir.View()
+	} else {
 		out := s.outDir.Value()
 		if out == "" {
 			out = defaultOutputDirHint()
@@ -682,73 +767,29 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	return panel("⚙ Configuration", width, minBodyLines, strings.TrimRight(b.String(), "\n"), colConfig)
 }
 
-// modeOptions is the canonical option order and text for the match-mode
-// selector — shared by modeRow (what's drawn) and modeOptionSpans (where a
-// click on it lands), so the two can't quietly drift apart the way a
-// hand-duplicated column calculation would.
-var modeOptions = []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere}
-
-func modeOptionText(m vanity.MatchMode, selected bool) string {
-	mark := "( )"
-	if selected {
-		mark = "(•)"
-	}
-	return mark + " " + string(m)
-}
-
+// modeRow shows the current match mode as a single cycling value — "‹
+// Anywhere ›" — the same shape every other configuration field uses,
+// rather than the earlier design that laid out all three modes inline as a
+// row of options. The full prefix/suffix/anywhere comparison already has a
+// home (the Statistics panel), so this field doesn't need to duplicate it;
+// it just needs to say what's currently chosen and that arrow keys change
+// it, consistent with CPU share and everything else in this panel.
 func modeRow(cur vanity.MatchMode, focused bool) string {
-	var parts []string
-	for _, m := range modeOptions {
-		style := stLabel
-		if m == cur {
-			style = stValue
-		}
-		parts = append(parts, style.Render(modeOptionText(m, m == cur)))
-	}
-	line := strings.Join(parts, " ")
+	value := stValue.Render(capitalize(string(cur)))
+	line := "‹ " + value + " ›"
 	if focused {
 		line += stHint.Render("  ←/→")
 	}
 	return line
 }
 
-// modeOptionSpan is one clickable option's column range within its row,
-// [Start, End), using the same unstyled text modeRow renders (mark width is
-// identical whether selected or not, so this doesn't need to know which
-// mode is current).
-type modeOptionSpan struct {
-	Mode       vanity.MatchMode
-	Start, End int
-}
-
-func modeOptionSpans() []modeOptionSpan {
-	var spans []modeOptionSpan
-	col := 0
-	for i, m := range modeOptions {
-		if i > 0 {
-			col++ // the single-space separator modeRow joins options with
-		}
-		w := len([]rune(modeOptionText(m, false)))
-		spans = append(spans, modeOptionSpan{Mode: m, Start: col, End: col + w})
-		col += w
+func capitalize(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
 	}
-	return spans
-}
-
-// modeAt returns the mode whose option text contains column col (relative to
-// the start of the options, i.e. already offset by modeRowValueCol), or
-// ok=false if col falls outside all three — clicking the row's label, for
-// instance, rather than any specific option.
-func modeAt(col int) (m vanity.MatchMode, ok bool) {
-	if col < 0 {
-		return "", false
-	}
-	for _, span := range modeOptionSpans() {
-		if col >= span.Start && col < span.End {
-			return span.Mode, true
-		}
-	}
-	return "", false
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 // cpuRow's core count intentionally isn't repeated here — the Resources
@@ -811,7 +852,7 @@ func (s *Setup) renderPreview() string {
 	if len(pats) == 0 {
 		return stLabel.Render("Type a word to see cost\nestimates for each mode.")
 	}
-	cmp := vanity.CompareModes(pats, s.rate)
+	cmp := vanity.CompareModes(pats, s.effectiveRate())
 
 	var b strings.Builder
 	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
@@ -873,7 +914,7 @@ func (s *Setup) renderProgressBar(width int) string {
 		// as currently configured, is expected to take — live as you type
 		// or change the mode, not just once you've already committed to it.
 		if pats := s.patterns(); len(pats) > 0 {
-			est := vanity.NewEstimate(pats, s.mode, s.rate)
+			est := vanity.NewEstimate(pats, s.mode, s.effectiveRate())
 			eta := "impossible in this mode"
 			if est.Probability > 0 {
 				eta = "typically " + humanDur(est.P50)

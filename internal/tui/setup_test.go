@@ -34,7 +34,14 @@ func press(s *Setup, keys ...string) {
 	}
 }
 
+// typeText types into whichever field currently has focus. Typing only
+// reaches a text field while it's in edit mode (entered via Enter or a
+// click), so this enters edit mode first if it isn't already active —
+// mirroring what a real user does before typing.
 func typeText(s *Setup, text string) {
+	if !s.editing {
+		s.Update(key("enter"))
+	}
 	for _, r := range text {
 		s.Update(key(string(r)))
 	}
@@ -75,6 +82,7 @@ func TestTypingUpdatesLivePreview(t *testing.T) {
 func TestModeFollowsRecommendationUntilManuallyChanged(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	typeText(s, "borderx")
+	press(s, "enter") // finish editing the word field
 	if s.mode != vanity.MatchAnywhere {
 		t.Fatalf("expected the mode to auto-follow the recommendation (anywhere), got %q", s.mode)
 	}
@@ -85,7 +93,9 @@ func TestModeFollowsRecommendationUntilManuallyChanged(t *testing.T) {
 	}
 	fixed := s.mode
 
-	typeText(s, "x") // further edits to the word must not override the manual choice
+	press(s, "shift+tab", "shift+tab") // back to Word(s)
+	typeText(s, "x")                   // further edits to the word must not override the manual choice
+	press(s, "enter")
 	if s.mode != fixed {
 		t.Errorf("mode changed after being manually fixed: got %q, want %q", s.mode, fixed)
 	}
@@ -123,7 +133,7 @@ func TestThreadsPercentStaysInBounds(t *testing.T) {
 
 func TestEnterWithNoWordDoesNotStart(t *testing.T) {
 	s := NewSetup(SetupConfig{})
-	press(s, "enter")
+	press(s, "s") // s starts (or stops) a search regardless of which field has focus
 	if s.phase != phaseSetup {
 		t.Fatal("must not start a search with no word entered")
 	}
@@ -138,7 +148,7 @@ func TestEnterWithNoWordDoesNotStart(t *testing.T) {
 func TestEnterWithImpossibleModeDoesNotStart(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	typeText(s, "test") // "test" cannot be a valid suffix
-	press(s, "tab", "tab")
+	press(s, "enter", "tab", "tab")
 	// cycle from the recommended mode to suffix specifically
 	for s.mode != vanity.MatchSuffix {
 		press(s, "right")
@@ -162,9 +172,10 @@ func TestEnterWithImpossibleModeDoesNotStart(t *testing.T) {
 func TestEnterWithValidInputStartsAndFreezesSettings(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	typeText(s, "ab")
-	press(s, "tab")
+	press(s, "enter", "tab") // finish editing Word(s), move to Save to
 	typeText(s, t.TempDir())
-	press(s, "enter")
+	press(s, "enter") // finish editing Save to
+	press(s, "s")     // start
 
 	if s.phase != phaseRunning {
 		t.Fatalf("expected phaseRunning after a valid start, got %v", s.phase)
@@ -237,7 +248,7 @@ func TestNoLineExceedsTerminalWidth(t *testing.T) {
 			s := NewSetup(SetupConfig{Words: []string{longWord}, OutDir: longPath})
 			s.Update(tea.WindowSizeMsg{Width: width, Height: 50})
 			if running {
-				press(s, "enter")
+				press(s, "s")
 				if s.phase != phaseRunning {
 					t.Fatalf("width %d: expected the search to start", width)
 				}
@@ -294,11 +305,11 @@ func TestClickFocusesAndActsOnField(t *testing.T) {
 	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
 	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 
-	// A click on the Match mode row, but not on any specific option (e.g.
-	// the empty space after "anywhere"), still focuses it and cycles —
-	// clicking imprecisely shouldn't be a no-op.
+	// A left-click anywhere on the Match mode row focuses it and cycles the
+	// value forward, exactly as pressing right-arrow after tabbing there
+	// would — see TestMouseClickCyclesModeAndRendersIt for the full cycle.
 	before := s.mode
-	click := tea.MouseMsg{X: 200, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	click := tea.MouseMsg{X: 20, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
 	s.Update(click)
 
 	if s.focus != fieldMode {
@@ -308,7 +319,7 @@ func TestClickFocusesAndActsOnField(t *testing.T) {
 		t.Error("clicking to change the mode should fix it, same as an arrow key would")
 	}
 	if s.mode == before {
-		t.Error("a click on the row that misses every option should still cycle it")
+		t.Error("left-click on Match mode should cycle it")
 	}
 
 	// Right-click on CPU share (offset 3) should lower the percentage.
@@ -327,38 +338,38 @@ func TestClickFocusesAndActsOnField(t *testing.T) {
 // get this right only by coincidence. Verify each option's computed span
 // against the actual rendered text before trusting the span math, then
 // click within each and confirm it selects exactly that mode.
-func TestMouseClickSelectsExactModeOption(t *testing.T) {
-	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
+// Match mode is a single cycling value ("‹ Anywhere ›"), the same shape as
+// every other field in the panel — not a row of three inline options — so a
+// click anywhere on the row (left or right button) cycles it, exactly like
+// CPU share. The rendered row must actually show the current mode,
+// capitalized, so this checks the real output rather than only the state.
+func TestMouseClickCyclesModeAndRendersIt(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"borderx"}, Mode: vanity.MatchPrefix})
 	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	lines := strings.Split(s.View(), "\n")
-	// lipgloss.SetColorProfile(0) (set in init) keeps this plain text, with
-	// no ANSI codes to strip before comparing columns.
-	modeLine := lines[fieldsFirstRow+2]
 
-	for _, span := range modeOptionSpans() {
-		wantText := string(span.Mode)
-		if !strings.Contains(modeLine[modeRowValueCol:], wantText) {
-			t.Fatalf("mode %q not found in rendered row at the expected region: %q", wantText, modeLine)
-		}
+	modeLine := strings.Split(s.View(), "\n")[fieldsFirstRow+2]
+	if !strings.Contains(modeLine, "Prefix") {
+		t.Fatalf("expected the current mode capitalized in the row, got %q", modeLine)
+	}
 
-		s.mode = "" // force a change so a no-op click can't accidentally pass
-		s.modeIsFixed = false
-		mid := (span.Start + span.End) / 2
-		s.Update(tea.MouseMsg{
-			X: modeRowValueCol + mid, Y: fieldsFirstRow + 2,
-			Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
-		})
-		if s.mode != span.Mode {
-			t.Errorf("click at column %d (span %d-%d) selected %q, want %q",
-				modeRowValueCol+mid, span.Start, span.End, s.mode, span.Mode)
-		}
+	s.Update(tea.MouseMsg{X: 30, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	if s.mode != vanity.MatchSuffix {
+		t.Errorf("left-click should cycle prefix -> suffix, got %q", s.mode)
+	}
+	if !s.modeIsFixed {
+		t.Error("clicking to change the mode should fix it, same as an arrow key would")
+	}
+
+	s.Update(tea.MouseMsg{X: 30, Y: fieldsFirstRow + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	if s.mode != vanity.MatchPrefix {
+		t.Errorf("right-click should cycle back suffix -> prefix, got %q", s.mode)
 	}
 }
 
 func TestMouseIgnoredOnceRunning(t *testing.T) {
 	s := NewSetup(SetupConfig{Words: []string{"ab"}, OutDir: t.TempDir()})
 	s.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	press(s, "enter")
+	press(s, "s")
 	if s.phase != phaseRunning {
 		t.Fatal("expected the search to start")
 	}
