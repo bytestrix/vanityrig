@@ -243,7 +243,7 @@ func TestNoLineExceedsTerminalWidth(t *testing.T) {
 	longWord := "borderlandborderlandborderland"
 	longPath := t.TempDir() + "/a/very/long/output/directory/for/keys"
 
-	for _, width := range []int{50, 60, 80, 100, 120, 145, 200} {
+	for _, width := range []int{50, 60, 80, 100, 120, 145, 200, 240, 300} {
 		for _, running := range []bool{false, true} {
 			s := NewSetup(SetupConfig{Words: []string{longWord}, OutDir: longPath})
 			s.Update(tea.WindowSizeMsg{Width: width, Height: 50})
@@ -385,6 +385,39 @@ func TestMouseIgnoredOnceRunning(t *testing.T) {
 // The default log level (info) hides routine STATS throughput lines but
 // keeps INFO and MATCH; "v" cycles to warn (which hides INFO too) and then
 // to debug (which shows everything, STATS included).
+// Regression test: the dashboard used to hard-cap its rendered width at 140
+// columns, leaving a wide terminal (a large Konsole window, reported by a
+// user screenshot) mostly blank on the right instead of filling it like a
+// real monitoring dashboard. The widest rendered line must actually use
+// close to the full width given, up to the new (much higher) sanity ceiling.
+func TestWideTerminalIsActuallyFilled(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
+	for _, width := range []int{160, 200, 220} {
+		s.Update(tea.WindowSizeMsg{Width: width, Height: 45})
+		widest := 0
+		for _, line := range strings.Split(s.View(), "\n") {
+			if w := lipgloss.Width(line); w > widest {
+				widest = w
+			}
+		}
+		if widest < width-4 {
+			t.Errorf("width %d: widest rendered line is only %d columns — dashboard is leaving blank space instead of filling the terminal", width, widest)
+		}
+	}
+}
+
+// Regression test: a tall terminal used to leave a wall of blank space below
+// a fixed 8-line Logs panel instead of the panel growing to fill it, another
+// part of the same "doesn't fill the terminal" report.
+func TestTallTerminalGrowsTheLogsPanel(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"borderx"}})
+	s.Update(tea.WindowSizeMsg{Width: 140, Height: 60})
+	rendered := strings.Count(s.View(), "\n") + 1
+	if rendered < 50 {
+		t.Errorf("a 60-row terminal only produced %d rows of output — the dashboard should grow to fill it, not leave it mostly blank", rendered)
+	}
+}
+
 func TestLogLevelFilterCyclesAndHidesStats(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	s.appendLog("INFO", "search started")
@@ -446,6 +479,29 @@ func TestDifficultyIsShownInStatistics(t *testing.T) {
 	out := s.View()
 	if !strings.Contains(out, "2^") {
 		t.Errorf("expected a 2^N difficulty figure in the pre-start preview:\n%s", out)
+	}
+}
+
+// Regression test: the Progress panel used to say only "impossible in this
+// mode" for an unsatisfiable pattern+mode combination, with no explanation —
+// reported directly by a user screenshot. It must show the actual rule the
+// pattern breaks, the same explanation vanity.Validate already produces for
+// tryStart and the -check report.
+func TestProgressPanelExplainsWhyAModeIsImpossible(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	typeText(s, "moneyyyyyy") // ends in "y", but every v3 address ends in "d"
+	press(s, "enter", "tab", "tab")
+	for s.mode != vanity.MatchSuffix {
+		press(s, "right")
+	}
+
+	out := s.View()
+	if strings.Contains(out, "impossible in this mode") {
+		t.Errorf("expected a real explanation, not the old unexplained message:\n%s", out)
+	}
+	if !strings.Contains(out, "cannot be a suffix") {
+		t.Errorf("expected the Progress panel to explain why suffix is impossible for this word:\n%s", out)
 	}
 }
 

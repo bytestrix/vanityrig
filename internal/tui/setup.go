@@ -613,7 +613,7 @@ func (s *Setup) appendLog(tag, msg string) {
 	// Stored history is larger than what's shown at once so that switching
 	// the log-level filter to something stricter, then back to something
 	// looser, doesn't reveal a gap — the lines were kept, just hidden.
-	const maxStored = 50
+	const maxStored = 300 // generous enough for a tall terminal's log panel
 	text := fmt.Sprintf("[%s] [%-5s] %s", time.Now().Format("15:04:05"), tag, msg)
 	s.logLines = append(s.logLines, logEntry{tag: tag, text: text, level: levelOf(tag)})
 	if len(s.logLines) > maxStored {
@@ -635,8 +635,11 @@ func (s *Setup) View() string {
 	if width <= 0 {
 		width = 100
 	}
-	if width > 140 {
-		width = 140
+	// The old 140-column cap left a wide terminal mostly blank on the right
+	// — a real monitoring dashboard (btop, k9s) fills the window it's given.
+	// 240 is just a sanity ceiling for pathological inputs, not a target.
+	if width > 240 {
+		width = 240
 	}
 
 	var b strings.Builder
@@ -692,7 +695,21 @@ func (s *Setup) View() string {
 		b.WriteString(s.renderGPUStatus(width, 0))
 	}
 	b.WriteString("\n")
-	b.WriteString(s.renderLogs(width))
+
+	// Logs grows to fill whatever vertical space the terminal actually has
+	// left, instead of a fixed 8-line box floating above a wall of blank
+	// space below the footer — the single biggest gap from the reference
+	// layout, which fills the window edge to edge.
+	usedLines := strings.Count(b.String(), "\n") + 1
+	const footerAndMargin = 2
+	logsMinBody := s.height - usedLines - panelOverhead - footerAndMargin
+	if logsMinBody < 3 {
+		logsMinBody = 3
+	}
+	if logsMinBody > 200 {
+		logsMinBody = 200 // sanity ceiling; a real terminal won't ask for this
+	}
+	b.WriteString(s.renderLogs(width, logsMinBody))
 	b.WriteString("\n")
 	b.WriteString(s.renderFooter(width))
 	b.WriteString("\n")
@@ -861,7 +878,7 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	b.WriteString(row("Word(s)", wordView, s.focus == fieldWord))
 	b.WriteString(row("Save to", outView, s.focus == fieldOutDir))
 	b.WriteString(row("Match mode", modeRow(s.mode, s.focus == fieldMode && editable), s.focus == fieldMode))
-	b.WriteString(row("CPU share", cpuRow(s.percent), s.focus == fieldThreads))
+	b.WriteString(row("CPU share", cpuRow(s.percent, barWidthFor(fieldWidth)), s.focus == fieldThreads))
 
 	if s.startErr != "" {
 		b.WriteString("\n  " + stErr.Render("! "+s.startErr))
@@ -895,12 +912,26 @@ func capitalize(s string) string {
 	return string(r)
 }
 
+// barWidthFor scales a bar to the room actually available instead of a
+// fixed 14 columns, so a wide panel gets a wide bar rather than a short one
+// floating in blank space — clamped so it never goes illegibly short or
+// absurdly long.
+func barWidthFor(avail int) int {
+	w := avail - 8 // room for "  100%" beside it
+	if w < 14 {
+		return 14
+	}
+	if w > 60 {
+		return 60
+	}
+	return w
+}
+
 // cpuRow's core count intentionally isn't repeated here — the Resources
 // panel's own note line already says it — so this row stays short enough
 // that Match mode, not this one, is what decides how narrow the two-column
 // layout can safely go.
-func cpuRow(percent int) string {
-	const barWidth = 14
+func cpuRow(percent, barWidth int) string {
 	filled := int(float64(barWidth) * float64(percent) / 100)
 	bar := lipgloss.NewStyle().Foreground(colConfig).Render(strings.Repeat("█", filled)) +
 		stLabel.Render(strings.Repeat("░", barWidth-filled))
@@ -911,7 +942,7 @@ func cpuRow(percent int) string {
 // kernel exposes one, a real measured package temperature — never invented
 // OS telemetry for anything this can't actually read.
 func (s *Setup) renderResources(width int, minBodyLines int) string {
-	const barWidth = 14
+	barWidth := barWidthFor(width - 4 - 6) // panel padding + "CPU  " label
 	percent := s.percent
 	if s.phase == phaseSetup {
 		percent = 0 // nothing is actually running yet
@@ -1041,12 +1072,22 @@ func (s *Setup) renderProgressBar(width int) string {
 		// or change the mode, not just once you've already committed to it.
 		if pats := s.patterns(); len(pats) > 0 {
 			est := vanity.NewEstimate(pats, s.mode, s.effectiveRate())
-			eta := "impossible in this mode"
-			if est.Probability > 0 {
-				eta = "typically " + humanDur(est.P50)
+			switch {
+			case est.Probability > 0:
+				eta := "typically " + humanDur(est.P50)
+				plain = fmt.Sprintf("Ready to search %s for %q — %s. Press enter to begin.",
+					s.mode, strings.Join(pats, ", "), eta)
+			default:
+				// "impossible" alone was a dead end — say the actual rule
+				// this pattern breaks (vanity.Validate already has to know
+				// it, to refuse tryStart; the dashboard just wasn't showing
+				// it), same as the -check report already does.
+				reason := "no address can ever match this combination"
+				if err := vanity.Validate(pats[0], s.mode); err != nil {
+					reason = err.Error()
+				}
+				plain = reason
 			}
-			plain = fmt.Sprintf("Ready to search %s for %q — %s. Press enter to begin.",
-				s.mode, strings.Join(pats, ", "), eta)
 		}
 	} else {
 		if s.snap.Estimate.Probability > 0 {
@@ -1070,8 +1111,15 @@ func (s *Setup) renderProgressBar(width int) string {
 	return panel("◆ Progress", width, 0, body, colProgress)
 }
 
-func (s *Setup) renderLogs(width int) string {
-	const shown = 8
+// renderLogs shows as many of the most recent matching lines as minBodyLines
+// (the vertical space the terminal actually has left) allows, rather than a
+// fixed 8-line window — a tall terminal gets a tall log panel instead of a
+// small box floating over blank space.
+func (s *Setup) renderLogs(width, minBodyLines int) string {
+	shown := minBodyLines
+	if shown < 8 {
+		shown = 8
+	}
 	var visible []logEntry
 	for _, e := range s.logLines {
 		if e.visible(s.logLevel) {
@@ -1096,7 +1144,7 @@ func (s *Setup) renderLogs(width int) string {
 		body = strings.Join(lines, "\n")
 	}
 	title := fmt.Sprintf("📜 Logs · level %s", s.logLevel)
-	return panel(title, width, 0, body, colLogs)
+	return panel(title, width, minBodyLines, body, colLogs)
 }
 
 // styleLogLine colours the [TAG] token so MATCH and warnings stand out from
