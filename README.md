@@ -55,11 +55,16 @@ vanityrig
 
 That's it — no flags to learn. A real dashboard opens, with everything on one
 screen at once: **Configuration** (word, save location, match mode, CPU
-share), **Resources**, **Statistics** — showing a live prefix/suffix/anywhere
-cost comparison until you start — **Progress**, and a scrolling **Logs**
-panel. Tab between fields, arrow keys to change a selection, enter to start —
-Configuration freezes in place and the rest switch to live search data,
-without ever leaving this screen.
+share), **Statistics** (live prefix/suffix/anywhere cost comparison,
+including difficulty as 2^N bits, until you start), **Progress**,
+**Resources** (CPU share and, where the kernel exposes one, real CPU
+temperature), **GPU Status** (honestly "coming soon" — there is no GPU engine
+here, so nothing here is a fabricated number), and a scrolling **Logs** panel
+with a cyclable level filter (`v`). Tab between fields, arrow keys to change a
+selection, `enter` to edit a field or start, `s` to start/stop/restart a
+search without quitting, `q` to quit — Configuration freezes in place while
+running and the rest switch to live search data, without ever leaving this
+screen.
 
 Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
 — see [Usage](#usage) below.
@@ -119,6 +124,7 @@ vanityrig vanityrig -match anywhere          # skip the question, go straight to
 vanityrig vanityrig ritrigvan -stop-after 3  # OR search, stop after 3 total matches
 vanityrig vanityrig -check                   # just the numbers, don't offer to run anything
 vanityrig vanityrig -y                       # skip every prompt, use the recommended mode
+vanityrig -benchmark -threads 8              # measure real keys/sec on this machine, no search
 ```
 
 | Flag | Default | Meaning |
@@ -132,11 +138,18 @@ vanityrig vanityrig -y                       # skip every prompt, use the recomm
 | `-check` | off | show the estimate and exit — don't offer to search |
 | `-y` | off | skip every prompt and start immediately |
 | `-plain` | off | plain log lines instead of the live dashboard |
+| `-benchmark` | off | measure real keys/sec on this machine and exit — no search, no files written |
+| `-benchmark-time` | `5s` | how long `-benchmark` measures for |
 
-Press `q`, `Esc`, or `Ctrl-C` to stop a running search. Progress is saved
-continuously, so running the same word again continues from where it left off
-instead of starting over. A match is written to disk **before** it's
-announced, so a crash between finding and saving can't lose it.
+Press `q` to quit, or `s` to stop a running search without quitting — the
+dashboard stays up with the final logs and stats, and `s` again re-arms it to
+search again (progress is saved continuously, so restarting the same word
+continues from where it left off instead of starting over). A match is
+written to disk **before** it's announced, so a crash between finding and
+saving can't lose it; a plaintext and CSV summary of every match (address,
+timestamp, save directory) is also appended to `matches.txt`/`matches.csv` in
+the output directory, alongside — never instead of — the real key files,
+which must stay in Tor's exact binary format to be usable.
 
 **Exit codes:** `0` achievable (however long the odds), `1` unsatisfiable
 (well formed, but no matching address exists in any mode), `2` malformed

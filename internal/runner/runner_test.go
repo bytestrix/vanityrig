@@ -67,6 +67,29 @@ func TestFindsMatchAndStopsAtTarget(t *testing.T) {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
+
+	// A found match must also land in the plaintext/CSV summary files — a
+	// human- and spreadsheet-readable record alongside the real key files,
+	// never instead of them (those must stay in Tor's exact binary layout).
+	txt, err := os.ReadFile(filepath.Join(dir, "matches.txt"))
+	if err != nil {
+		t.Fatalf("matches.txt: %v", err)
+	}
+	if !strings.Contains(string(txt), snap.Matches[0].Address+".onion") {
+		t.Errorf("matches.txt missing the found address:\n%s", txt)
+	}
+
+	csvData, err := os.ReadFile(filepath.Join(dir, "matches.csv"))
+	if err != nil {
+		t.Fatalf("matches.csv: %v", err)
+	}
+	csvStr := string(csvData)
+	if !strings.HasPrefix(csvStr, "found_at,address,dir,keys_tried") {
+		t.Errorf("matches.csv missing its header row:\n%s", csvStr)
+	}
+	if !strings.Contains(csvStr, snap.Matches[0].Address+".onion") {
+		t.Errorf("matches.csv missing the found address:\n%s", csvStr)
+	}
 }
 
 // The durable counter is the whole reason this package exists: stopping and

@@ -47,7 +47,13 @@ Flags:
   -check            show the estimate and exit, don't offer to search
   -y                skip every prompt and start immediately (recommended mode, if -match is unset)
   -plain            print plain lines instead of the live dashboard
+  -benchmark        measure real keys/sec on this machine and exit — no search, no files written
+  -benchmark-time duration   how long to measure for (default 5s, only with -benchmark)
   -version          print the version and exit
+
+Benchmark mode measures actual observed throughput (the same samples the
+live dashboard reads), not an estimate:
+  vanityrig -benchmark -match anywhere -threads 8
 `
 
 func main() {
@@ -87,12 +93,30 @@ func run(args []string) int {
 	enginePath := fs.String("mkp224o", "", "path to the mkp224o binary")
 	checkOnly := fs.Bool("check", false, "show the estimate and exit")
 	yes := fs.Bool("y", false, "skip every prompt and start immediately")
+	benchmark := fs.Bool("benchmark", false, "measure real keys/sec on this machine and exit")
+	benchmarkTime := fs.Duration("benchmark-time", 5*time.Second, "how long -benchmark measures for")
 
 	patterns, rest := splitPatterns(args)
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 	patterns = append(patterns, fs.Args()...)
+
+	if *benchmark {
+		// Doesn't need a word: it measures raw generate+check throughput,
+		// which doesn't depend on what pattern would eventually be searched
+		// for, only on which engine mode runs.
+		m := vanity.MatchAnywhere
+		if *mode != "" {
+			var err error
+			m, err = vanity.ParseMatchMode(*mode)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				return 2
+			}
+		}
+		return runBenchmark(m, *threads, *benchmarkTime, *enginePath)
+	}
 
 	if len(patterns) == 0 {
 		fmt.Fprint(os.Stderr, "vanityrig needs at least one word to search for\n\n"+usage)

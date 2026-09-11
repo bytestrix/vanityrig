@@ -114,9 +114,74 @@ type Setup struct {
 	snap          runner.Snapshot
 	finished      bool
 	startErr      string
-	logLines      []string
+	logLines      []logEntry
+	logLevel      logLevel
 	lastStatLog   time.Time
 	matchesLogged int
+	errorsLogged  int
+}
+
+// logLevel filters which log lines are shown, cycled with "v". MATCH lines
+// bypass the filter entirely — a search finding what it was asked to find is
+// never something to hide behind a verbosity setting.
+type logLevel int
+
+const (
+	logInfo  logLevel = iota // default: lifecycle events + matches, no raw throughput spam
+	logWarn                  // only problems + matches
+	logDebug                 // everything, including periodic throughput samples
+)
+
+func (l logLevel) String() string {
+	switch l {
+	case logWarn:
+		return "warn"
+	case logDebug:
+		return "debug"
+	default:
+		return "info"
+	}
+}
+
+func (l logLevel) next() logLevel { return (l + 1) % 3 }
+
+// logEntry is one line in the Logs panel, tagged with a severity so the
+// panel can filter without re-parsing rendered text.
+type logEntry struct {
+	tag   string
+	text  string
+	level logLevel
+}
+
+// levelOf classifies a log tag: STATS is routine telemetry (debug-tier,
+// hidden by default), WARN is an actual problem, everything else (INFO,
+// MATCH) is normal operational info.
+func levelOf(tag string) logLevel {
+	switch tag {
+	case "STATS":
+		return logDebug
+	case "WARN":
+		return logWarn
+	default:
+		return logInfo
+	}
+}
+
+// visible reports whether an entry should show under filter f — MATCH always
+// does, everything else needs to be at or above f's severity (info < warn <
+// debug, i.e. a stricter filter hides more).
+func (e logEntry) visible(f logLevel) bool {
+	if e.tag == "MATCH" {
+		return true
+	}
+	switch f {
+	case logDebug:
+		return true
+	case logWarn:
+		return e.level == logWarn
+	default:
+		return e.level != logDebug
+	}
 }
 
 // NewSetup builds the combined screen, pre-filled from cfg.
@@ -344,6 +409,10 @@ func (s *Setup) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		s.logLines = nil
 		return s, nil
+
+	case "v":
+		s.logLevel = s.logLevel.next()
+		return s, nil
 	}
 
 	if s.phase != phaseSetup {
@@ -521,6 +590,14 @@ func (s *Setup) logProgress() {
 		s.appendLog("MATCH", m.Address+".onion")
 	}
 
+	// Errors the engine reported (e.g. a match write failing) were previously
+	// tracked in the snapshot but never actually surfaced anywhere in this
+	// dashboard — logging them as WARN closes that gap and gives the "warn"
+	// filter level something real to show.
+	for ; s.errorsLogged < len(s.snap.Errors); s.errorsLogged++ {
+		s.appendLog("WARN", s.snap.Errors[s.errorsLogged])
+	}
+
 	const statInterval = 8 * time.Second
 	if s.snap.KeysPerSec <= 0 {
 		return
@@ -533,11 +610,14 @@ func (s *Setup) logProgress() {
 }
 
 func (s *Setup) appendLog(tag, msg string) {
-	const maxLines = 8
-	line := fmt.Sprintf("[%s] [%-5s] %s", time.Now().Format("15:04:05"), tag, msg)
-	s.logLines = append(s.logLines, line)
-	if len(s.logLines) > maxLines {
-		s.logLines = s.logLines[len(s.logLines)-maxLines:]
+	// Stored history is larger than what's shown at once so that switching
+	// the log-level filter to something stricter, then back to something
+	// looser, doesn't reveal a gap — the lines were kept, just hidden.
+	const maxStored = 50
+	text := fmt.Sprintf("[%s] [%-5s] %s", time.Now().Format("15:04:05"), tag, msg)
+	s.logLines = append(s.logLines, logEntry{tag: tag, text: text, level: levelOf(tag)})
+	if len(s.logLines) > maxStored {
+		s.logLines = s.logLines[len(s.logLines)-maxStored:]
 	}
 }
 
@@ -563,30 +643,54 @@ func (s *Setup) View() string {
 	b.WriteString(s.renderHeader(width))
 	b.WriteString("\n\n")
 
+	const panelOverhead = 3 // top border + title line + bottom border
+
 	if width >= twoColumnMinWidth {
+		// Row 1: Configuration | Statistics — a dense monitoring-dashboard
+		// grid (inspired by btop/k9s/lazygit) rather than a settings form,
+		// so config and live metrics sit side by side from the first frame.
+		leftW := width*58/100 - 1
 		rightW := width - width*58/100
-		resources := s.renderResources(rightW)
-		stats := s.renderStats(rightW)
-		right := lipgloss.JoinVertical(lipgloss.Left, resources, stats)
+		stats := s.renderStats(rightW, 0)
+		statsLines := strings.Count(stats, "\n") + 1
+		config := s.renderConfig(leftW, statsLines-panelOverhead)
+		// A word/mode change can make Configuration the taller of the two
+		// (e.g. the inline error line) — re-render Statistics padded to
+		// match rather than assuming Configuration is always the shorter.
+		configLines := strings.Count(config, "\n") + 1
+		if configLines > statsLines {
+			stats = s.renderStats(rightW, configLines-panelOverhead)
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, config, " ", stats))
+		b.WriteString("\n")
 
-		// Match the configuration panel's height to the combined right
-		// column, so their bottom borders line up instead of the shorter
-		// one trailing off into blank space — the "why doesn't this line
-		// up" complaint a plain lipgloss.JoinHorizontal leaves on the table.
-		rightLines := strings.Count(resources, "\n") + strings.Count(stats, "\n") + 2
-		const panelOverhead = 3 // top border + title line + bottom border
-		left := s.renderConfig(width*58/100-1, rightLines-panelOverhead)
+		b.WriteString(s.renderProgressBar(width))
+		b.WriteString("\n")
 
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right))
+		// Row 2: Resources | GPU Status
+		halfW := width/2 - 1
+		resources := s.renderResources(halfW, 0)
+		gpu := s.renderGPUStatus(width-halfW-1, 0)
+		resLines := strings.Count(resources, "\n") + 1
+		gpuLines := strings.Count(gpu, "\n") + 1
+		rowLines := resLines
+		if gpuLines > rowLines {
+			rowLines = gpuLines
+		}
+		resources = s.renderResources(halfW, rowLines-panelOverhead)
+		gpu = s.renderGPUStatus(width-halfW-1, rowLines-panelOverhead)
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, resources, " ", gpu))
 	} else {
 		b.WriteString(s.renderConfig(width, 0))
 		b.WriteString("\n")
-		b.WriteString(s.renderResources(width))
+		b.WriteString(s.renderStats(width, 0))
 		b.WriteString("\n")
-		b.WriteString(s.renderStats(width))
+		b.WriteString(s.renderProgressBar(width))
+		b.WriteString("\n")
+		b.WriteString(s.renderResources(width, 0))
+		b.WriteString("\n")
+		b.WriteString(s.renderGPUStatus(width, 0))
 	}
-	b.WriteString("\n")
-	b.WriteString(s.renderProgressBar(width))
 	b.WriteString("\n")
 	b.WriteString(s.renderLogs(width))
 	b.WriteString("\n")
@@ -628,11 +732,11 @@ func (s *Setup) footer() []string {
 
 	switch s.phase {
 	case phaseRunning:
-		return []string{"s stop", "q quit", "l clear log"}
+		return []string{"s stop", "q quit", "v log level", "l clear log"}
 	case phaseFinished:
-		return []string{"s restart", "q quit", "l clear log"}
+		return []string{"s restart", "q quit", "v log level", "l clear log"}
 	default:
-		return []string{"s start", "enter edit", "q quit", "←/→ change", "↑↓/tab move"}
+		return []string{"s start", "enter edit", "q quit", "←/→ change", "↑↓/tab move", "v log level"}
 	}
 }
 
@@ -758,7 +862,6 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	b.WriteString(row("Save to", outView, s.focus == fieldOutDir))
 	b.WriteString(row("Match mode", modeRow(s.mode, s.focus == fieldMode && editable), s.focus == fieldMode))
 	b.WriteString(row("CPU share", cpuRow(s.percent), s.focus == fieldThreads))
-	b.WriteString("  " + stFieldLabel.Render(pad("GPU", 14)) + " " + stLabel.Render("coming soon") + "\n")
 
 	if s.startErr != "" {
 		b.WriteString("\n  " + stErr.Render("! "+s.startErr))
@@ -804,10 +907,10 @@ func cpuRow(percent int) string {
 	return fmt.Sprintf("%s  %3d%%", bar, percent)
 }
 
-// renderResources shows the CPU share actually configured (never invented
-// OS telemetry we don't measure) and marks GPU plainly as unavailable,
-// rather than a fake utilization number for hardware nothing here uses.
-func (s *Setup) renderResources(width int) string {
+// renderResources shows the CPU share actually configured and, where the
+// kernel exposes one, a real measured package temperature — never invented
+// OS telemetry for anything this can't actually read.
+func (s *Setup) renderResources(width int, minBodyLines int) string {
 	const barWidth = 14
 	percent := s.percent
 	if s.phase == phaseSetup {
@@ -821,27 +924,42 @@ func (s *Setup) renderResources(width int) string {
 		cores = 1
 	}
 
-	gpuBar := stLabel.Render(strings.Repeat("░", barWidth))
+	tempStr := "n/a"
+	if c, ok := cpuTempC(); ok {
+		tempStr = fmt.Sprintf("%.0f°C", c)
+	}
 
 	// This line's a sentence, not a fixed-format row, so it's the one most
 	// likely to overflow a narrow panel — truncate it to what the panel can
 	// actually hold rather than trust the string is always short enough.
 	inner := width - 4
-	note := fmt.Sprintf("using %d of %d cores · GPU not available yet", cores, runtime.NumCPU())
+	note := fmt.Sprintf("using %d of %d cores", cores, runtime.NumCPU())
 	note = truncateTo(note, inner-4)
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("  %-4s %s  %3d%%\n", "CPU", cpuBar, percent))
-	b.WriteString(fmt.Sprintf("  %-4s %s  %s\n", "GPU", gpuBar, stLabel.Render("n/a")))
+	b.WriteString(fmt.Sprintf("  %-4s %s\n", "Temp", stValue.Render(tempStr)))
 	b.WriteString(stLabel.Render("  " + note))
-	return panel("📊 Resources", width, 0, strings.TrimRight(b.String(), "\n"), colResources)
+	return panel("📊 Resources", width, minBodyLines, strings.TrimRight(b.String(), "\n"), colResources)
 }
 
-func (s *Setup) renderStats(width int) string {
+// renderGPUStatus is its own panel, separate from Resources, matching the
+// reference layout's "GPU Status" box — kept honest: there's no GPU engine
+// in this codebase, so every field here says so plainly rather than showing
+// a fabricated device name, VRAM figure, or utilization number.
+func (s *Setup) renderGPUStatus(width int, minBodyLines int) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("  %-13s %s\n", "CUDA Support", stLabel.Render("coming soon")))
+	b.WriteString(fmt.Sprintf("  %-13s %s\n", "Device", stLabel.Render("n/a")))
+	b.WriteString(fmt.Sprintf("  %-13s %s", "VRAM", stLabel.Render("n/a")))
+	return panel("🖥 GPU Status", width, minBodyLines, b.String(), colResources)
+}
+
+func (s *Setup) renderStats(width, minBodyLines int) string {
 	if s.phase == phaseSetup {
-		return panel("📈 Statistics", width, 0, s.renderPreview(), colStats)
+		return panel("📈 Statistics", width, minBodyLines, s.renderPreview(), colStats)
 	}
-	return panel("📈 Statistics", width, 0, s.renderLiveStats(), colStats)
+	return panel("📈 Statistics", width, minBodyLines, s.renderLiveStats(), colStats)
 }
 
 // renderPreview shows the same prefix/suffix/anywhere cost comparison the
@@ -858,10 +976,12 @@ func (s *Setup) renderPreview() string {
 	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
 		e := cmp.Estimates[m]
 		timing := humanDur(e.P50)
+		bits := fmt.Sprintf("2^%.0f", e.Bits)
 		note := ""
 		switch {
 		case e.Probability <= 0:
 			timing = "impossible"
+			bits = ""
 		case m == cmp.Best:
 			note = stGood.Render("← best")
 		}
@@ -869,7 +989,7 @@ func (s *Setup) renderPreview() string {
 		if m == s.mode {
 			marker = stFocused.Render("▸ ")
 		}
-		b.WriteString(fmt.Sprintf("%s%-10s %-12s %s\n", marker, m, timing, note))
+		b.WriteString(fmt.Sprintf("%s%-10s %-12s %-7s %s\n", marker, m, timing, bits, note))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -883,7 +1003,13 @@ func (s *Setup) renderLiveStats() string {
 		eta = humanDur(snap.Estimate.P50)
 	}
 
+	difficulty := "—"
+	if !math.IsInf(snap.Estimate.Bits, 1) {
+		difficulty = fmt.Sprintf("2^%.1f", snap.Estimate.Bits)
+	}
+
 	var b strings.Builder
+	b.WriteString(row2("Difficulty", difficulty, labelWidth))
 	b.WriteString(row2("Keys Tested", humanCount(snap.KeysTried), labelWidth))
 	b.WriteString(row2("Hash Rate", rate(snap.KeysPerSec), labelWidth))
 	b.WriteString(row2("Elapsed", roughElapsed(snap.SessionTime), labelWidth))
@@ -945,22 +1071,38 @@ func (s *Setup) renderProgressBar(width int) string {
 }
 
 func (s *Setup) renderLogs(width int) string {
+	const shown = 8
+	var visible []logEntry
+	for _, e := range s.logLines {
+		if e.visible(s.logLevel) {
+			visible = append(visible, e)
+		}
+	}
+
 	var body string
-	if len(s.logLines) == 0 {
+	switch {
+	case len(s.logLines) == 0:
 		body = stLabel.Render("Nothing logged yet — start a search to see live events here.")
-	} else {
+	case len(visible) == 0:
+		body = stLabel.Render(fmt.Sprintf("Nothing at the %q level yet — press v to widen the filter.", s.logLevel))
+	default:
+		if len(visible) > shown {
+			visible = visible[len(visible)-shown:]
+		}
 		var lines []string
-		for _, l := range s.logLines {
-			lines = append(lines, styleLogLine(l))
+		for _, e := range visible {
+			lines = append(lines, styleLogLine(e))
 		}
 		body = strings.Join(lines, "\n")
 	}
-	return panel("📜 Logs", width, 0, body, colLogs)
+	title := fmt.Sprintf("📜 Logs · level %s", s.logLevel)
+	return panel(title, width, 0, body, colLogs)
 }
 
-// styleLogLine colours the [TAG] token so MATCH and errors stand out from
+// styleLogLine colours the [TAG] token so MATCH and warnings stand out from
 // routine INFO/STATS lines at a glance.
-func styleLogLine(line string) string {
+func styleLogLine(e logEntry) string {
+	line := e.text
 	first := strings.Index(line, "]")
 	if first < 0 || first+1 >= len(line) {
 		return stLabel.Render(line)
@@ -979,10 +1121,12 @@ func styleLogLine(line string) string {
 	tag := line[tagStart : tagEnd+1]
 
 	style := stLabel
-	switch {
-	case strings.Contains(tag, "MATCH"):
+	switch e.tag {
+	case "MATCH":
 		style = stGood
-	case strings.Contains(tag, "STATS"):
+	case "WARN":
+		style = stWarn
+	case "STATS":
 		style = stFocused
 	}
 	return stLabel.Render(line[:tagStart]) + style.Render(tag) + stLabel.Render(line[tagEnd+1:])

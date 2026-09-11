@@ -10,6 +10,7 @@ package runner
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -195,6 +196,39 @@ func (r *Runner) saveState() {
 	_ = os.Rename(tmp, r.statePath)
 }
 
+// appendMatchSummary appends one line to matches.txt and one row to
+// matches.csv in the output directory. Best-effort: a failure to write the
+// summary must never interrupt a search that already succeeded at the
+// expensive part (finding the key), so errors here are silently dropped
+// rather than surfaced as a search failure.
+func (r *Runner) appendMatchSummary(m Match) {
+	txtPath := filepath.Join(r.cfg.OutputDir, "matches.txt")
+	if f, err := os.OpenFile(txtPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		fmt.Fprintf(f, "%s\t%s.onion\t%s\n", m.FoundAt.Format(time.RFC3339), m.Address, m.Dir)
+		f.Close()
+	}
+
+	csvPath := filepath.Join(r.cfg.OutputDir, "matches.csv")
+	isNew := true
+	if _, err := os.Stat(csvPath); err == nil {
+		isNew = false
+	}
+	if f, err := os.OpenFile(csvPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		w := csv.NewWriter(f)
+		if isNew {
+			_ = w.Write([]string{"found_at", "address", "dir", "keys_tried"})
+		}
+		_ = w.Write([]string{
+			m.FoundAt.Format(time.RFC3339),
+			m.Address + ".onion",
+			m.Dir,
+			fmt.Sprintf("%.0f", m.KeysTried),
+		})
+		w.Flush()
+		f.Close()
+	}
+}
+
 // EngineName reports which backend will run, for display before starting.
 func (r *Runner) EngineName() string { return r.eng.Name() }
 
@@ -292,6 +326,12 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if !dup {
 					r.st.Matches = append(r.st.Matches, m)
+					// A plain-text/CSV summary alongside the real key files —
+					// never a replacement for them (those must stay in Tor's
+					// exact binary layout to be usable as a hidden service),
+					// just a quick human/spreadsheet-readable record of what
+					// was found and when.
+					r.appendMatchSummary(m)
 				}
 				count := len(r.st.Matches)
 				r.mu.Unlock()

@@ -9,6 +9,9 @@ package tui
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -338,6 +341,34 @@ func humanDur(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%.1f years", d.Hours()/24/365.25)
 	}
+}
+
+// cpuTempC reads the current CPU package temperature in Celsius, when the
+// kernel exposes one. Only Linux's /sys/class/thermal is read — no cgo, no
+// vendor tooling — so this reports a real measured value or honestly says
+// it can't, rather than inventing a number for platforms it can't read.
+func cpuTempC() (float64, bool) {
+	for i := 0; i < 10; i++ {
+		zone := filepath.Join("/sys/class/thermal", fmt.Sprintf("thermal_zone%d", i))
+		typeBytes, err := os.ReadFile(filepath.Join(zone, "type"))
+		if err != nil {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(string(typeBytes)))
+		if !strings.Contains(t, "cpu") && !strings.Contains(t, "x86_pkg_temp") && !strings.Contains(t, "soc") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(zone, "temp"))
+		if err != nil {
+			continue
+		}
+		milli, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
+		if err != nil {
+			continue
+		}
+		return milli / 1000, true
+	}
+	return 0, false
 }
 
 // expNeg is exp(-x), clamped so an enormous exponent cannot produce a NaN or a

@@ -381,3 +381,86 @@ func TestMouseIgnoredOnceRunning(t *testing.T) {
 	}
 	s.cancel()
 }
+
+// The default log level (info) hides routine STATS throughput lines but
+// keeps INFO and MATCH; "v" cycles to warn (which hides INFO too) and then
+// to debug (which shows everything, STATS included).
+func TestLogLevelFilterCyclesAndHidesStats(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.appendLog("INFO", "search started")
+	s.appendLog("STATS", "1.0M keys tested | 1.0M/sec")
+
+	out := s.View()
+	if !strings.Contains(out, "search started") {
+		t.Errorf("expected the INFO line to be visible by default:\n%s", out)
+	}
+	if strings.Contains(out, "keys tested") {
+		t.Errorf("expected the STATS line to be hidden at the default (info) level:\n%s", out)
+	}
+
+	press(s, "v") // info -> warn
+	if s.logLevel != logWarn {
+		t.Fatalf("expected logLevel to advance to warn, got %v", s.logLevel)
+	}
+	out = s.View()
+	if strings.Contains(out, "search started") {
+		t.Errorf("expected the INFO line to be hidden at the warn level:\n%s", out)
+	}
+
+	press(s, "v") // warn -> debug
+	if s.logLevel != logDebug {
+		t.Fatalf("expected logLevel to advance to debug, got %v", s.logLevel)
+	}
+	out = s.View()
+	if !strings.Contains(out, "keys tested") {
+		t.Errorf("expected the STATS line to be visible at the debug level:\n%s", out)
+	}
+
+	press(s, "v") // debug -> info (wraps)
+	if s.logLevel != logInfo {
+		t.Fatalf("expected logLevel to wrap back to info, got %v", s.logLevel)
+	}
+}
+
+// A MATCH line must stay visible no matter how strict the filter is — the
+// whole point of running the search is to see this.
+func TestMatchLogLineIgnoresLevelFilter(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.appendLog("MATCH", "borderxabc.onion")
+	s.logLevel = logWarn
+
+	if !strings.Contains(s.View(), "borderxabc.onion") {
+		t.Error("a MATCH line must remain visible even at the strictest log filter")
+	}
+}
+
+// The Statistics panel should show the difficulty as bits of work (2^N) both
+// before a search starts (per mode, in the cost preview) and once it's
+// running (for the mode actually in use) — the same number report.go already
+// prints for -check, just surfaced live in the dashboard too.
+func TestDifficultyIsShownInStatistics(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	typeText(s, "borderx")
+	press(s, "enter")
+
+	out := s.View()
+	if !strings.Contains(out, "2^") {
+		t.Errorf("expected a 2^N difficulty figure in the pre-start preview:\n%s", out)
+	}
+}
+
+func TestGPUStatusPanelIsHonestAboutNotExisting(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	out := s.View()
+	if !strings.Contains(out, "GPU Status") {
+		t.Errorf("expected a GPU Status panel:\n%s", out)
+	}
+	if !strings.Contains(out, "coming soon") {
+		t.Errorf("GPU status must say plainly that it doesn't exist yet, not show fake numbers:\n%s", out)
+	}
+	for _, fake := range []string{"NVIDIA", "RTX", "CUDA 12", "%GPU"} {
+		if strings.Contains(out, fake) {
+			t.Errorf("must not show a fabricated GPU detail %q:\n%s", fake, out)
+		}
+	}
+}
