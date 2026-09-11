@@ -61,7 +61,7 @@ func run(args []string) int {
 		// of dumping usage text. Anything non-interactive (a script, a pipe)
 		// has no one to answer prompts, so it gets the usage text and exits.
 		if isInputTerminal() {
-			return runWizard()
+			return runInteractive(nil, "", "", 22.2e6, 0, 0, "")
 		}
 		fmt.Print(usage)
 		return 2
@@ -132,44 +132,35 @@ func run(args []string) int {
 	}
 
 	est := vanity.NewEstimate(patterns, m, *rate)
-	vanity.WriteReport(os.Stdout, est, nil, *budget)
-	fmt.Println()
 
+	// An impossible search is reported immediately rather than handed to the
+	// dashboard: there is nothing to configure further, and printing here
+	// (before any alt-screen takeover) keeps the explanation visible in
+	// scrollback after the program exits.
 	if est.Probability <= 0 {
+		vanity.WriteReport(os.Stdout, est, nil, *budget)
+		fmt.Println()
 		return 1
 	}
 	if *checkOnly {
+		vanity.WriteReport(os.Stdout, est, nil, *budget)
+		fmt.Println()
 		return 0
 	}
-	if !*yes {
-		if !isInputTerminal() {
-			fmt.Println("Not running non-interactively without -y.")
-			return 0
-		}
-		if !askConfirmStart(est.Verdict) {
-			fmt.Println("Not starting.")
-			return 0
-		}
+	if *yes {
+		return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
 	}
-
-	return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
-}
-
-// runWizard is what a bare `vanityrig` runs into a real terminal: one
-// continuous full-screen form (word, save location, mode, confirm) rather
-// than a sequence of separate prompts — see runWizardForm.
-func runWizard() int {
-	patterns, out, mode, ok := runWizardForm()
-	if !ok {
-		fmt.Println("Not starting.")
+	if !isInputTerminal() {
+		fmt.Println("Not running non-interactively without -y.")
 		return 0
 	}
-	return startSearch(patterns, mode, 0, out, 0, false, "")
+	return runInteractive(patterns, *out, m, *rate, *threads, *stopAfter, *enginePath)
 }
 
 // runCompare handles the common case: the caller gave a word but no -match,
-// so it shows what each position actually costs and asks which one to run,
-// instead of silently assuming prefix.
+// so it shows what each position actually costs and, if interactive, opens
+// the dashboard letting the caller pick one instead of silently assuming
+// prefix.
 func runCompare(patterns []string, rate float64, threads int, out string, stopAfter int, plain bool, enginePath string, checkOnly, yes bool) int {
 	cmp := vanity.CompareModes(patterns, rate)
 
@@ -182,23 +173,15 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 		vanity.WriteModeComparison(os.Stdout, cmp)
 		return 0
 	}
-
-	chosen := cmp.Best
-	if !yes {
-		if !isInputTerminal() {
-			vanity.WriteModeComparison(os.Stdout, cmp)
-			fmt.Println("Not running non-interactively without -y.")
-			return 0
-		}
-		m, ok := askModeAndConfirm(cmp)
-		if !ok {
-			fmt.Println("Not starting.")
-			return 0
-		}
-		chosen = m
+	if yes {
+		return startSearch(patterns, cmp.Best, threads, out, stopAfter, plain, enginePath)
 	}
-
-	return startSearch(patterns, chosen, threads, out, stopAfter, plain, enginePath)
+	if !isInputTerminal() {
+		vanity.WriteModeComparison(os.Stdout, cmp)
+		fmt.Println("Not running non-interactively without -y.")
+		return 0
+	}
+	return runInteractive(patterns, out, "", rate, threads, stopAfter, enginePath)
 }
 
 // isInputTerminal reports whether stdin is an interactive terminal, so a

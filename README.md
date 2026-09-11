@@ -53,10 +53,13 @@ no Go toolchain required. Linux and macOS only; Windows users, grab the
 vanityrig
 ```
 
-That's it — no flags to learn. A real form opens: a text box for the word, a
-text box for where to save keys, and once it knows the cost of each option,
-an arrow-key list to pick prefix, suffix, or anywhere — press enter and it
-starts, straight into a live dashboard tracking progress.
+That's it — no flags to learn. A real dashboard opens, with everything on one
+screen at once: a **Settings** panel (word, save location, match mode,
+CPU share) and a **Log / Status** panel showing live cost estimates for
+prefix/suffix/anywhere as you type. Tab between fields, arrow keys to change
+a selection, enter to start — the settings panel freezes in place and the
+log panel switches to live search progress, without ever leaving this
+screen.
 
 Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
 — see [Usage](#usage) below.
