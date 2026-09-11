@@ -1,10 +1,9 @@
-// Package tui also provides Setup: a single combined screen for configuring
-// and then watching a search, rather than a sequence of separate prompt
-// screens. A "Settings" panel (word, save location, match mode, CPU share)
-// and a "Log / Status" panel are both visible from the very first frame;
-// starting the search freezes the settings panel in place and the log panel
-// switches from a live cost preview to live progress, without ever leaving
-// this screen.
+// Package tui also provides Setup: a single combined dashboard for
+// configuring and then watching a search, rather than a sequence of
+// separate prompt screens. Configuration, Resources, Statistics, Progress
+// and Logs are all visible from the very first frame; starting the search
+// freezes the configuration panel in place while the others switch from a
+// pre-start preview to live data, without ever leaving this screen.
 package tui
 
 import (
@@ -15,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,12 +44,22 @@ const (
 	phaseFinished
 )
 
+// Section accent colours — each panel gets its own, so the dashboard reads as
+// distinct sections rather than one undifferentiated block.
 var (
-	stPanelTitle = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	colConfig    = lipgloss.AdaptiveColor{Light: "#1d4ed8", Dark: "#60a5fa"}
+	colResources = colGood
+	colStats     = colWarn
+	colProgress  = lipgloss.AdaptiveColor{Light: "#7c3aed", Dark: "#c084fc"}
+	colLogs      = lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#22d3ee"}
+
+	stPanelTitle = lipgloss.NewStyle().Bold(true)
 	stFocused    = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	stFieldLabel = lipgloss.NewStyle().Foreground(colDim)
 	panelBorder  = lipgloss.RoundedBorder()
 )
+
+const repoURL = "https://github.com/bytestrix/vanityrig"
 
 // SetupConfig seeds the screen with whatever was already decided on the
 // command line, so `vanityrig word` doesn't ask a question it already has
@@ -62,9 +72,10 @@ type SetupConfig struct {
 	Rate       float64
 	StopAfter  int
 	EnginePath string
+	Version    string // shown in the header; "dev" if empty
 }
 
-// Setup is the combined settings+log dashboard.
+// Setup is the combined settings+dashboard screen.
 type Setup struct {
 	word   textinput.Model
 	outDir textinput.Model
@@ -77,6 +88,7 @@ type Setup struct {
 
 	rate       float64
 	enginePath string
+	version    string
 
 	focus setupField
 	phase setupPhase
@@ -84,11 +96,14 @@ type Setup struct {
 	width, height int
 	quitting      bool
 
-	run      *runner.Runner
-	cancel   func()
-	snap     runner.Snapshot
-	finished bool
-	startErr string
+	run           *runner.Runner
+	cancel        func()
+	snap          runner.Snapshot
+	finished      bool
+	startErr      string
+	logLines      []string
+	lastStatLog   time.Time
+	matchesLogged int
 }
 
 // NewSetup builds the combined screen, pre-filled from cfg.
@@ -113,6 +128,11 @@ func NewSetup(cfg SetupConfig) *Setup {
 		rate = 22.2e6
 	}
 
+	version := cfg.Version
+	if version == "" {
+		version = "dev"
+	}
+
 	s := &Setup{
 		word:        word,
 		outDir:      out,
@@ -122,8 +142,9 @@ func NewSetup(cfg SetupConfig) *Setup {
 		stop:        cfg.StopAfter,
 		rate:        rate,
 		enginePath:  cfg.EnginePath,
+		version:     version,
 		focus:       fieldWord,
-		width:       80,
+		width:       100,
 	}
 	if s.mode == "" {
 		s.mode = vanity.MatchAnywhere // placeholder until the first recompute picks a real recommendation
@@ -170,14 +191,6 @@ func (s *Setup) recomputeMode() {
 	}
 }
 
-// Outcome is what the caller does once the screen is done: either the search
-// already ran to completion/cancellation inside this model, or the user quit
-// before ever starting one.
-type Outcome struct {
-	Started bool
-	Snap    runner.Snapshot
-}
-
 func (s *Setup) Init() tea.Cmd { return tick() }
 
 func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -189,10 +202,12 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if s.phase == phaseRunning {
 			s.snap = s.run.Snapshot()
+			s.logProgress()
 			select {
 			case <-s.run.Done():
 				s.finished = true
 				s.phase = phaseFinished
+				s.appendLog("INFO", "search finished")
 			default:
 			}
 		}
@@ -324,11 +339,16 @@ func (s *Setup) tryStart() (tea.Model, tea.Cmd) {
 		threads = 1
 	}
 
+	outDir := s.outDir.Value()
+	if outDir == "" {
+		outDir = defaultOutputDirHint()
+	}
+
 	r, err := runner.New(runner.Config{
 		Patterns:   pats,
 		Mode:       s.mode,
 		Threads:    threads,
-		OutputDir:  s.outDir.Value(),
+		OutputDir:  outDir,
 		EnginePath: s.enginePath,
 		StopAfter:  s.stop,
 	})
@@ -344,7 +364,41 @@ func (s *Setup) tryStart() (tea.Model, tea.Cmd) {
 	s.cancel = cancel
 	go func() { _ = r.Run(ctx) }()
 	s.snap = r.Snapshot()
+
+	s.appendLog("INFO", fmt.Sprintf("VanityRig %s started", s.version))
+	s.appendLog("INFO", fmt.Sprintf("target %q (%s, %d threads)", strings.Join(pats, ", "), s.mode, threads))
+	s.appendLog("INFO", "output folder: "+outDir)
+	s.appendLog("INFO", "starting key generation…")
 	return s, nil
+}
+
+// logProgress appends a periodic throughput line and an immediate line for
+// every new match, so the log reads like an actual event history rather
+// than a snapshot that happens to redraw.
+func (s *Setup) logProgress() {
+	for ; s.matchesLogged < len(s.snap.Matches); s.matchesLogged++ {
+		m := s.snap.Matches[s.matchesLogged]
+		s.appendLog("MATCH", m.Address+".onion")
+	}
+
+	const statInterval = 8 * time.Second
+	if s.snap.KeysPerSec <= 0 {
+		return
+	}
+	if !s.lastStatLog.IsZero() && time.Since(s.lastStatLog) < statInterval {
+		return
+	}
+	s.lastStatLog = time.Now()
+	s.appendLog("STATS", fmt.Sprintf("%s keys tested | %s/sec", humanCount(s.snap.KeysTried), humanCount(s.snap.KeysPerSec)))
+}
+
+func (s *Setup) appendLog(tag, msg string) {
+	const maxLines = 8
+	line := fmt.Sprintf("[%s] [%-5s] %s", time.Now().Format("15:04:05"), tag, msg)
+	s.logLines = append(s.logLines, line)
+	if len(s.logLines) > maxLines {
+		s.logLines = s.logLines[len(s.logLines)-maxLines:]
+	}
 }
 
 // Snapshot exposes the runner's state once a search has started, so the
@@ -359,43 +413,126 @@ func (s *Setup) Snapshot() (runner.Snapshot, bool) {
 func (s *Setup) View() string {
 	width := s.width
 	if width <= 0 {
-		width = 80
-	}
-	if width > 100 {
 		width = 100
+	}
+	if width > 140 {
+		width = 140
 	}
 
 	var b strings.Builder
-	b.WriteString(s.renderSettings(width))
+	b.WriteString(s.renderHeader(width))
+	b.WriteString("\n\n")
+
+	if width >= 100 {
+		left := s.renderConfig(width*58/100 - 1)
+		right := lipgloss.JoinVertical(lipgloss.Left, s.renderResources(width-width*58/100), s.renderStats(width-width*58/100))
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right))
+	} else {
+		b.WriteString(s.renderConfig(width))
+		b.WriteString("\n")
+		b.WriteString(s.renderResources(width))
+		b.WriteString("\n")
+		b.WriteString(s.renderStats(width))
+	}
 	b.WriteString("\n")
-	b.WriteString(s.renderLog(width))
+	b.WriteString(s.renderProgressBar(width))
 	b.WriteString("\n")
-	b.WriteString(stHint.Render("  " + s.footer()))
+	b.WriteString(s.renderLogs(width))
+	b.WriteString("\n")
+	b.WriteString(s.renderFooter(width))
 	b.WriteString("\n")
 	return b.String()
 }
 
-func (s *Setup) footer() string {
-	if s.phase != phaseSetup {
-		return "press q to stop"
+func (s *Setup) renderHeader(width int) string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(colGood).Render("Vanity") +
+		lipgloss.NewStyle().Bold(true).Foreground(colConfig).Render("Rig")
+	tagline := stLabel.Render("CPU-powered vanity address generator") + "\n" +
+		stLabel.Render("Find your dream address. Bruteforce it.")
+	left := title + "  " + strings.SplitN(tagline, "\n", 2)[0] + "\n      " + strings.SplitN(tagline, "\n", 2)[1]
+
+	right := stLabel.Render("v"+s.version) + "\n" + stLabel.Render(repoURL)
+	rightBlock := lipgloss.NewStyle().Align(lipgloss.Right).Render(right)
+
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(rightBlock)
+
+	// The version/URL aside is dropped rather than overflowed or wrapped on a
+	// terminal too narrow to fit both — same principle the rest of this
+	// dashboard uses for asides, and the only safe option here since
+	// JoinHorizontal has no truncating mode of its own.
+	if gap := width - leftW - rightW; gap >= 1 {
+		spacer := lipgloss.NewStyle().Width(gap).Render("")
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, spacer, rightBlock)
 	}
-	return "tab move · ←/→ change · enter start · q quit"
+	return left
 }
 
-func panel(title string, width int, body string) string {
+// footer returns the keybinding hints, shortest first, so a narrow terminal
+// can drop the later (less essential) ones instead of overflowing.
+func (s *Setup) footer() []string {
+	if s.phase != phaseSetup {
+		return []string{"q stop"}
+	}
+	return []string{"enter start", "q quit", "←/→ change", "↑↓/tab move"}
+}
+
+func (s *Setup) renderFooter(width int) string {
+	status := stGood.Render("● Running…")
+	if s.phase == phaseSetup {
+		status = stLabel.Render("● Ready")
+	} else if s.finished {
+		status = stWarn.Render("■ Stopped")
+	}
+
+	// Add hints one at a time only while they still fit, rather than
+	// rendering the full set and hoping it happens to be short enough.
+	var kept []string
+	left := "  "
+	for _, h := range s.footer() {
+		sep := ""
+		if len(kept) > 0 {
+			sep = "  ·  "
+		}
+		candidate := left + sep + h
+		if lipgloss.Width(candidate) > width {
+			break
+		}
+		left = candidate
+		kept = append(kept, h)
+	}
+	var styledLeft string
+	for i, h := range kept {
+		if i == 0 {
+			styledLeft = "  " + stHint.Render(h)
+		} else {
+			styledLeft += stLabel.Render("  ·  ") + stHint.Render(h)
+		}
+	}
+
+	// Same rule as the header: a right-aligned aside that doesn't fit gets
+	// dropped rather than pushed past the terminal's actual width.
+	if gap := width - lipgloss.Width(styledLeft) - lipgloss.Width(status); gap >= 1 {
+		return styledLeft + lipgloss.NewStyle().Width(gap).Render("") + status
+	}
+	return styledLeft
+}
+
+func panel(title string, width int, body string, accent lipgloss.AdaptiveColor) string {
 	inner := width - 4
 	if inner < 20 {
 		inner = 20
 	}
 	style := lipgloss.NewStyle().
 		Border(panelBorder).
-		BorderForeground(colDim).
+		BorderForeground(accent).
 		Padding(0, 1).
 		Width(inner)
-	return style.Render(stPanelTitle.Render(title) + "\n" + body)
+	titled := stPanelTitle.Foreground(accent).Render(title)
+	return style.Render(titled + "\n" + body)
 }
 
-func (s *Setup) renderSettings(width int) string {
+func (s *Setup) renderConfig(width int) string {
 	editable := s.phase == phaseSetup
 	row := func(label, value string, focused bool) string {
 		l := stFieldLabel.Render(pad(label, 14))
@@ -404,6 +541,17 @@ func (s *Setup) renderSettings(width int) string {
 		}
 		return "  " + l + " " + value + "\n"
 	}
+
+	// textinput's placeholder renders as a single character when Width is
+	// left at its zero value — despite the docs saying 0 means "unlimited" —
+	// so it must be set explicitly, and reset on every render to track the
+	// panel's actual available width rather than a guessed constant.
+	fieldWidth := width - 20
+	if fieldWidth < 10 {
+		fieldWidth = 10
+	}
+	s.word.Width = fieldWidth
+	s.outDir.Width = fieldWidth
 
 	wordView := s.word.View()
 	if !editable {
@@ -422,14 +570,14 @@ func (s *Setup) renderSettings(width int) string {
 	b.WriteString(row("Word(s)", wordView, s.focus == fieldWord))
 	b.WriteString(row("Save to", outView, s.focus == fieldOutDir))
 	b.WriteString(row("Match mode", modeRow(s.mode, s.focus == fieldMode && editable), s.focus == fieldMode))
-	b.WriteString(row("CPU threads", cpuRow(s.percent), s.focus == fieldThreads))
+	b.WriteString(row("CPU share", cpuRow(s.percent), s.focus == fieldThreads))
 	b.WriteString("  " + stFieldLabel.Render(pad("GPU", 14)) + " " + stLabel.Render("coming soon") + "\n")
 
 	if s.startErr != "" {
 		b.WriteString("\n  " + stErr.Render("! "+s.startErr))
 	}
 
-	return panel("Settings", width, strings.TrimRight(b.String(), "\n"))
+	return panel("⚙ Configuration", width, strings.TrimRight(b.String(), "\n"), colConfig)
 }
 
 func modeRow(cur vanity.MatchMode, focused bool) string {
@@ -451,9 +599,9 @@ func modeRow(cur vanity.MatchMode, focused bool) string {
 }
 
 func cpuRow(percent int) string {
-	const barWidth = 20
+	const barWidth = 18
 	filled := int(float64(barWidth) * float64(percent) / 100)
-	bar := lipgloss.NewStyle().Foreground(colAccent).Render(strings.Repeat("█", filled)) +
+	bar := lipgloss.NewStyle().Foreground(colConfig).Render(strings.Repeat("█", filled)) +
 		stLabel.Render(strings.Repeat("░", barWidth-filled))
 	cores := int(math.Round(float64(runtime.NumCPU()) * float64(percent) / 100))
 	if cores < 1 {
@@ -462,27 +610,57 @@ func cpuRow(percent int) string {
 	return fmt.Sprintf("%s  %3d%%  (%d/%d cores)", bar, percent, cores, runtime.NumCPU())
 }
 
-func (s *Setup) renderLog(width int) string {
-	switch s.phase {
-	case phaseSetup:
-		return panel("Log / Status", width, s.renderPreview())
-	default:
-		return panel("Log / Status", width, s.renderProgress())
+// renderResources shows the CPU share actually configured (never invented
+// OS telemetry we don't measure) and marks GPU plainly as unavailable,
+// rather than a fake utilization number for hardware nothing here uses.
+func (s *Setup) renderResources(width int) string {
+	const barWidth = 22
+	percent := s.percent
+	if s.phase == phaseSetup {
+		percent = 0 // nothing is actually running yet
 	}
+	filled := int(float64(barWidth) * float64(percent) / 100)
+	cpuBar := lipgloss.NewStyle().Foreground(colResources).Render(strings.Repeat("█", filled)) +
+		stLabel.Render(strings.Repeat("░", barWidth-filled))
+	cores := int(math.Round(float64(runtime.NumCPU()) * float64(s.percent) / 100))
+	if cores < 1 {
+		cores = 1
+	}
+
+	gpuBar := stLabel.Render(strings.Repeat("░", barWidth))
+
+	// This line's a sentence, not a fixed-format row, so it's the one most
+	// likely to overflow a narrow panel — truncate it to what the panel can
+	// actually hold rather than trust the string is always short enough.
+	inner := width - 4
+	note := fmt.Sprintf("using %d of %d cores · GPU not available yet", cores, runtime.NumCPU())
+	note = truncateTo(note, inner-2)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("  %-16s %s  %3d%%\n", fmt.Sprintf("CPU (%d threads)", runtime.NumCPU()), cpuBar, percent))
+	b.WriteString(fmt.Sprintf("  %-16s %s  %s\n", "GPU", gpuBar, stLabel.Render("n/a")))
+	b.WriteString(stLabel.Render("  " + note))
+	return panel("📊 Resources", width, strings.TrimRight(b.String(), "\n"), colResources)
+}
+
+func (s *Setup) renderStats(width int) string {
+	if s.phase == phaseSetup {
+		return panel("📈 Statistics", width, s.renderPreview(), colStats)
+	}
+	return panel("📈 Statistics", width, s.renderLiveStats(), colStats)
 }
 
 // renderPreview shows the same prefix/suffix/anywhere cost comparison the
 // non-interactive -check output prints, live-updated as the word changes,
-// so the settings panel's mode selector isn't a blind choice.
+// so the configuration panel's mode selector isn't a blind choice.
 func (s *Setup) renderPreview() string {
 	pats := s.patterns()
 	if len(pats) == 0 {
-		return stLabel.Render("Type a word above to see cost estimates for each mode.")
+		return stLabel.Render("Type a word to see cost\nestimates for each mode.")
 	}
 	cmp := vanity.CompareModes(pats, s.rate)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  %-10s %-14s %s\n", "mode", "typical time", ""))
 	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
 		e := cmp.Estimates[m]
 		timing := humanDur(e.P50)
@@ -491,52 +669,114 @@ func (s *Setup) renderPreview() string {
 		case e.Probability <= 0:
 			timing = "impossible"
 		case m == cmp.Best:
-			note = stGood.Render("← recommended")
+			note = stGood.Render("← best")
 		}
 		marker := "  "
 		if m == s.mode {
 			marker = stFocused.Render("▸ ")
 		}
-		b.WriteString(fmt.Sprintf("%s%-10s %-14s %s\n", marker, m, timing, note))
+		b.WriteString(fmt.Sprintf("%s%-10s %-12s %s\n", marker, m, timing, note))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (s *Setup) renderProgress() string {
+func (s *Setup) renderLiveStats() string {
 	snap := s.snap
-	labelWidth := 13
+	labelWidth := 15
 
-	status := stGood.Render("● running")
-	if s.finished || snap.Stopped {
-		status = stWarn.Render("■ stopped")
-	} else if snap.KeysPerSec <= 0 {
-		status = stWarn.Render("● starting…")
+	eta := "—"
+	if snap.Estimate.Probability > 0 && snap.KeysPerSec > 0 && !vanity.Saturated(snap.Estimate.P50) {
+		eta = humanDur(snap.Estimate.P50)
 	}
 
 	var b strings.Builder
-	b.WriteString(row2("status", status, labelWidth))
-	b.WriteString(row2("speed", rate(snap.KeysPerSec), labelWidth))
-	b.WriteString(row2("keys tried", humanCount(snap.KeysTried), labelWidth))
-	if snap.Estimate.Probability > 0 {
-		chance := 1 - expNeg(snap.Estimate.Probability*snap.KeysTried)
-		b.WriteString(row2("odds so far", fmt.Sprintf("%.1f%%", chance*100), labelWidth))
-	}
-	b.WriteString("\n")
-
-	if len(snap.Matches) == 0 {
-		b.WriteString(stLabel.Render("no matches yet"))
-	} else {
-		var lines []string
-		lines = append(lines, stGood.Render(fmt.Sprintf("FOUND %d", len(snap.Matches))))
-		for _, mt := range snap.Matches {
-			lines = append(lines, stValue.Render(mt.Address+".onion"))
-			lines = append(lines, stLabel.Render("saved to "+mt.Dir))
-		}
-		b.WriteString(stMatchBox.Render(strings.Join(lines, "\n")))
-	}
+	b.WriteString(row2("Keys Tested", humanCount(snap.KeysTried), labelWidth))
+	b.WriteString(row2("Hash Rate", rate(snap.KeysPerSec), labelWidth))
+	b.WriteString(row2("Elapsed", roughElapsed(snap.SessionTime), labelWidth))
+	b.WriteString(row2("Est. Time (50%)", eta, labelWidth))
+	b.WriteString(row2("Matches Found", fmt.Sprintf("%d", len(snap.Matches)), labelWidth))
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func roughElapsed(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	sec := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, sec)
+	}
+	return fmt.Sprintf("%02d:%02d", m, sec)
+}
+
+func (s *Setup) renderProgressBar(width int) string {
+	label := stLabel.Render("Type a word above and press enter to begin.")
+	frac := 0.0
+	if s.phase != phaseSetup {
+		if s.snap.Estimate.Probability > 0 {
+			frac = 1 - expNeg(s.snap.Estimate.Probability*s.snap.KeysTried)
+		}
+		label = fmt.Sprintf("Searching for %s with %q", s.mode, strings.Join(s.patterns(), ", "))
+	}
+
+	barWidth := width - 12
+	if barWidth < 10 {
+		barWidth = 10
+	}
+	filled := int(frac * float64(barWidth))
+	bar := lipgloss.NewStyle().Foreground(colProgress).Render(strings.Repeat("█", filled)) +
+		stLabel.Render(strings.Repeat("░", barWidth-filled))
+
+	body := label + "\n" + bar + fmt.Sprintf("  %3.0f%%", frac*100)
+	return panel("◆ Progress", width, body, colProgress)
+}
+
+func (s *Setup) renderLogs(width int) string {
+	var body string
+	if len(s.logLines) == 0 {
+		body = stLabel.Render("Nothing logged yet — start a search to see live events here.")
+	} else {
+		var lines []string
+		for _, l := range s.logLines {
+			lines = append(lines, styleLogLine(l))
+		}
+		body = strings.Join(lines, "\n")
+	}
+	return panel("📜 Logs", width, body, colLogs)
+}
+
+// styleLogLine colours the [TAG] token so MATCH and errors stand out from
+// routine INFO/STATS lines at a glance.
+func styleLogLine(line string) string {
+	first := strings.Index(line, "]")
+	if first < 0 || first+1 >= len(line) {
+		return stLabel.Render(line)
+	}
+	rest := line[first+1:]
+	tagStart := strings.Index(rest, "[")
+	if tagStart < 0 {
+		return stLabel.Render(line)
+	}
+	tagEnd := strings.Index(rest[tagStart:], "]")
+	if tagEnd < 0 {
+		return stLabel.Render(line)
+	}
+	tagStart += first + 1
+	tagEnd += tagStart
+	tag := line[tagStart : tagEnd+1]
+
+	style := stLabel
+	switch {
+	case strings.Contains(tag, "MATCH"):
+		style = stGood
+	case strings.Contains(tag, "STATS"):
+		style = stFocused
+	}
+	return stLabel.Render(line[:tagStart]) + style.Render(tag) + stLabel.Render(line[tagEnd+1:])
+}
+
 func row2(label, value string, labelWidth int) string {
-	return fmt.Sprintf("%s %s\n", stLabel.Render(pad(label, labelWidth)), value)
+	return fmt.Sprintf("  %s %s\n", stLabel.Render(pad(label, labelWidth)), value)
 }

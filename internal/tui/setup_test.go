@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bytestrix/vanityrig/internal/vanity"
 )
@@ -45,7 +46,10 @@ func TestBothPanelsVisibleOnFirstFrame(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	out := s.View()
 
-	for _, want := range []string{"Settings", "Log / Status", "Word(s)", "Save to", "Match mode", "CPU threads", "GPU"} {
+	for _, want := range []string{
+		"Configuration", "Resources", "Statistics", "Progress", "Logs",
+		"Word(s)", "Save to", "Match mode", "CPU share", "GPU",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("first frame is missing %q:\n%s", want, out)
 		}
@@ -63,7 +67,7 @@ func TestTypingUpdatesLivePreview(t *testing.T) {
 	if !strings.Contains(out, "prefix") || !strings.Contains(out, "anywhere") {
 		t.Errorf("expected a live mode comparison once a word is typed:\n%s", out)
 	}
-	if strings.Contains(out, "Type a word above") {
+	if strings.Contains(out, "Type a word to see cost") {
 		t.Error("placeholder preview text should be gone once a word is typed")
 	}
 }
@@ -173,11 +177,14 @@ func TestEnterWithValidInputStartsAndFreezesSettings(t *testing.T) {
 	}
 
 	out := s.View()
-	if strings.Contains(out, "Type a word above") {
-		t.Error("log panel should show live progress, not the pre-start preview, once running")
+	if strings.Contains(out, "Type a word to see cost") {
+		t.Error("statistics panel should show live progress, not the pre-start preview, once running")
 	}
-	if !strings.Contains(out, "status") {
-		t.Errorf("expected live status in the log panel:\n%s", out)
+	if !strings.Contains(out, "Keys Tested") {
+		t.Errorf("expected live statistics once running:\n%s", out)
+	}
+	if !strings.Contains(out, "[INFO") {
+		t.Errorf("expected the log panel to have real event lines once started:\n%s", out)
 	}
 
 	s.cancel()
@@ -210,5 +217,43 @@ func TestSnapshotBeforeStartReportsNotStarted(t *testing.T) {
 	s := NewSetup(SetupConfig{})
 	if _, started := s.Snapshot(); started {
 		t.Error("Snapshot should report not-started before Enter is pressed")
+	}
+}
+
+// A hand-tuned width calculation is exactly where an off-by-a-few-columns
+// bug hides — this project has already shipped one (the CI-caught engine
+// note overflow) and this feature shipped two more during development (the
+// header's version/URL aside and the resources panel's help line both
+// overflowed their border before being fixed). Sweep a wide range of widths,
+// in both the single-column and two-column layouts, with a deliberately long
+// word and output path to stress the free-text lines, and assert nothing
+// ever exceeds its terminal width.
+func TestNoLineExceedsTerminalWidth(t *testing.T) {
+	longWord := "borderlandborderlandborderland"
+	longPath := t.TempDir() + "/a/very/long/output/directory/for/keys"
+
+	for _, width := range []int{50, 60, 80, 100, 120, 145, 200} {
+		for _, running := range []bool{false, true} {
+			s := NewSetup(SetupConfig{Words: []string{longWord}, OutDir: longPath})
+			s.Update(tea.WindowSizeMsg{Width: width, Height: 50})
+			if running {
+				press(s, "enter")
+				if s.phase != phaseRunning {
+					t.Fatalf("width %d: expected the search to start", width)
+				}
+				s.Update(tickMsg(time.Now()))
+			}
+
+			out := s.View()
+			for _, line := range strings.Split(out, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Errorf("width %d (running=%v): a %d-column line overflows: %q",
+						width, running, got, line)
+				}
+			}
+			if running {
+				s.cancel()
+			}
+		}
 	}
 }

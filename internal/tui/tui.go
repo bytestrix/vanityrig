@@ -247,6 +247,23 @@ func pad(s string, n int) string {
 	return s
 }
 
+// truncateTo cuts s to at most max runes, replacing the last one with an
+// ellipsis if it had to cut anything, so a sentence that's too long for its
+// panel is shortened rather than left to overflow the border.
+func truncateTo(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return string(r[:1])
+	}
+	return string(r[:max-1]) + "…"
+}
+
 func placement(m vanity.MatchMode) string {
 	switch m {
 	case vanity.MatchSuffix:

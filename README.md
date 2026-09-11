@@ -54,12 +54,12 @@ vanityrig
 ```
 
 That's it — no flags to learn. A real dashboard opens, with everything on one
-screen at once: a **Settings** panel (word, save location, match mode,
-CPU share) and a **Log / Status** panel showing live cost estimates for
-prefix/suffix/anywhere as you type. Tab between fields, arrow keys to change
-a selection, enter to start — the settings panel freezes in place and the
-log panel switches to live search progress, without ever leaving this
-screen.
+screen at once: **Configuration** (word, save location, match mode, CPU
+share), **Resources**, **Statistics** — showing a live prefix/suffix/anywhere
+cost comparison until you start — **Progress**, and a scrolling **Logs**
+panel. Tab between fields, arrow keys to change a selection, enter to start —
+Configuration freezes in place and the rest switch to live search data,
+without ever leaving this screen.
 
 Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
 — see [Usage](#usage) below.
