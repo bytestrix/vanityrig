@@ -651,3 +651,34 @@ func TestSpeedHistoryDoesNotWrapOntoExtraLine(t *testing.T) {
 		}
 	}
 }
+
+// Regression test: a local edit briefly reintroduced fabricated data —
+// static "Case Sensitive"/"Use GPU"/"Save Format"/"Stop After" config
+// rows with no backing state, a fake GPU utilization bar and a
+// hardcoded-42% "Memory" bar in Resources, a fake "GPU Hash Rate" line in
+// Statistics, and worst of all a permanently hardcoded fake .onion-search
+// "Current Address"/"Current Private Key" line in Progress. None of this
+// must ever reappear in a security tool's own UI.
+func TestDashboardNeverShowsFabricatedData(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"ab"}})
+	s.Update(tea.WindowSizeMsg{Width: 160, Height: 45})
+	press(s, "s")
+	if s.phase != phaseRunning {
+		t.Fatal("expected the search to start")
+	}
+	s.snap.Matches = append(s.snap.Matches, runner.Match{Address: "realaddressvalue", FoundAt: time.Now()})
+
+	out := s.View()
+	forbidden := []string{
+		"Case Sensitive", "Use GPU", "GPU Device", "GPU Utilization",
+		"Save Format", "1 match (keep running)", "Output Folder",
+		"GPU Hash Rate", "GPU (CUDA)", "Memory", "42%",
+		"Current Private Key", "5JQm3", "1F3z7a9Q", "sat0shi",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(out, f) {
+			t.Errorf("dashboard must never show fabricated data %q:\n%s", f, out)
+		}
+	}
+	s.cancel()
+}

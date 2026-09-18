@@ -234,30 +234,42 @@ func isInputTerminal() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// promptForMode prints the three-mode cost table and asks the user to pick
-// one. It returns the chosen mode and true, or ("", false) if the user
-// declines or types an unrecognised input.
+// promptForMode prints the three-mode cost table with numbered choices and
+// asks the user to pick one by number. It returns the chosen mode and true,
+// or ("", false) if the user declines.
 func promptForMode(cmp vanity.ModeComparison) (vanity.MatchMode, bool) {
 	vanity.WriteModeComparison(os.Stdout, cmp)
 	fmt.Println()
 
-	// Collect achievable modes in a consistent display order.
-	var valid []vanity.MatchMode
-	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
-		if e := cmp.Estimates[m]; e.Probability > 0 {
-			valid = append(valid, m)
+	// Build ordered list of all three modes (impossible ones included so the
+	// numbers stay consistent regardless of the word).
+	allModes := []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere}
+
+	// Print a numbered menu. Impossible modes are shown but greyed out so
+	// the user sees all three choices and understands why some are missing.
+	fmt.Println("  Choose a mode:")
+	defaultNum := 0
+	for i, m := range allModes {
+		num := i + 1
+		e := cmp.Estimates[m]
+		rec := ""
+		if m == cmp.Best {
+			rec = "  ← recommended"
+			defaultNum = num
+		}
+		if e.Probability <= 0 {
+			fmt.Printf("  %d  %-10s  (impossible)%s\n", num, string(m), rec)
+		} else {
+			fmt.Printf("  %d  %-10s%s\n", num, string(m), rec)
 		}
 	}
-	if len(valid) == 0 {
-		return "", false
-	}
-	names := make([]string, len(valid))
-	for i, m := range valid {
-		names[i] = string(m)
-	}
+	fmt.Println()
 
-	fmt.Printf("Mode [%s] (enter for recommended: %s, q to quit): ",
-		strings.Join(names, "/"), cmp.Best)
+	defaultStr := ""
+	if defaultNum > 0 {
+		defaultStr = fmt.Sprintf("enter for %d", defaultNum)
+	}
+	fmt.Printf("Enter choice [1-3] (%s, q to quit): ", defaultStr)
 
 	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
@@ -268,14 +280,23 @@ func promptForMode(cmp vanity.ModeComparison) (vanity.MatchMode, bool) {
 		return cmp.Best, true
 	case "q", "quit", "n", "no":
 		return "", false
+	case "1", "2", "3":
+		idx := int(line[0] - '1')
+		m := allModes[idx]
+		if e := cmp.Estimates[m]; e.Probability <= 0 {
+			fmt.Fprintf(os.Stderr, "mode %q is impossible for this word — pick a different number\n", string(m))
+			return "", false
+		}
+		return m, true
 	}
 
+	// Also still accept the full mode name for scripts / muscle memory.
 	m, err := vanity.ParseMatchMode(line)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "unknown mode %q — choose from %s\n", line, strings.Join(names, ", "))
+		fmt.Fprintf(os.Stderr, "unknown input %q — enter 1, 2, or 3\n", line)
 		return "", false
 	}
-	if est := cmp.Estimates[m]; est.Probability <= 0 {
+	if e := cmp.Estimates[m]; e.Probability <= 0 {
 		fmt.Fprintf(os.Stderr, "mode %q is impossible for this word\n", line)
 		return "", false
 	}
