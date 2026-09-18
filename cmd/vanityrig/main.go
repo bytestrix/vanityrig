@@ -8,9 +8,11 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bytestrix/vanityrig/internal/vanity"
@@ -178,7 +180,15 @@ func run(args []string) int {
 		fmt.Println("Not running non-interactively without -y.")
 		return 0
 	}
-	return runInteractive(patterns, *out, m, *rate, *threads, *stopAfter, *enginePath)
+	// Show the estimate in the terminal and ask for confirmation before
+	// starting — the TUI only appears when no arguments are given at all.
+	vanity.WriteReport(os.Stdout, est, nil, *budget)
+	fmt.Println()
+	if !askConfirm(fmt.Sprintf("Start searching for %q in %s mode?", strings.Join(patterns, ", "), m)) {
+		fmt.Println("Not starting.")
+		return 0
+	}
+	return startSearch(patterns, m, *threads, *out, *stopAfter, *plain, *enginePath)
 }
 
 // runCompare handles the common case: the caller gave a word but no -match,
@@ -205,7 +215,13 @@ func runCompare(patterns []string, rate float64, threads int, out string, stopAf
 		fmt.Println("Not running non-interactively without -y.")
 		return 0
 	}
-	return runInteractive(patterns, out, "", rate, threads, stopAfter, enginePath)
+	// Stay in the terminal: show costs, ask which mode, then start.
+	m, ok := promptForMode(cmp)
+	if !ok {
+		fmt.Println("Not starting.")
+		return 0
+	}
+	return startSearch(patterns, m, threads, out, stopAfter, plain, enginePath)
 }
 
 // isInputTerminal reports whether stdin is an interactive terminal, so a
@@ -216,4 +232,61 @@ func isInputTerminal() bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// promptForMode prints the three-mode cost table and asks the user to pick
+// one. It returns the chosen mode and true, or ("", false) if the user
+// declines or types an unrecognised input.
+func promptForMode(cmp vanity.ModeComparison) (vanity.MatchMode, bool) {
+	vanity.WriteModeComparison(os.Stdout, cmp)
+	fmt.Println()
+
+	// Collect achievable modes in a consistent display order.
+	var valid []vanity.MatchMode
+	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
+		if e := cmp.Estimates[m]; e.Probability > 0 {
+			valid = append(valid, m)
+		}
+	}
+	if len(valid) == 0 {
+		return "", false
+	}
+	names := make([]string, len(valid))
+	for i, m := range valid {
+		names[i] = string(m)
+	}
+
+	fmt.Printf("Mode [%s] (enter for recommended: %s, q to quit): ",
+		strings.Join(names, "/"), cmp.Best)
+
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+
+	switch line {
+	case "", "y", "yes":
+		return cmp.Best, true
+	case "q", "quit", "n", "no":
+		return "", false
+	}
+
+	m, err := vanity.ParseMatchMode(line)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unknown mode %q — choose from %s\n", line, strings.Join(names, ", "))
+		return "", false
+	}
+	if est := cmp.Estimates[m]; est.Probability <= 0 {
+		fmt.Fprintf(os.Stderr, "mode %q is impossible for this word\n", line)
+		return "", false
+	}
+	return m, true
+}
+
+// askConfirm prints a Y/n prompt and returns true when the user confirms.
+func askConfirm(question string) bool {
+	fmt.Print(question + " [Y/n]: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "" || line == "y" || line == "yes"
 }

@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -48,17 +49,22 @@ const (
 // Section accent colours — each panel gets its own, so the dashboard reads as
 // distinct sections rather than one undifferentiated block.
 var (
-	colConfig    = lipgloss.AdaptiveColor{Light: "#1d4ed8", Dark: "#60a5fa"}
-	colResources = colGood
-	colStats     = colWarn
-	colProgress  = lipgloss.AdaptiveColor{Light: "#7c3aed", Dark: "#c084fc"}
-	colLogs      = lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#22d3ee"}
+	colConfig    = lipgloss.AdaptiveColor{Light: "#1e40af", Dark: "#38bdf8"}
+	colResources = lipgloss.AdaptiveColor{Light: "#065f46", Dark: "#34d399"}
+	colStats     = lipgloss.AdaptiveColor{Light: "#92400e", Dark: "#fbbf24"}
+	colProgress  = lipgloss.AdaptiveColor{Light: "#6b21a8", Dark: "#e879f9"}
+	colLogs      = lipgloss.AdaptiveColor{Light: "#134e4a", Dark: "#2dd4bf"}
+	colBarEmpty  = lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#1e293b"}
 
 	stPanelTitle = lipgloss.NewStyle().Bold(true)
 	stFocused    = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	stFieldLabel = lipgloss.NewStyle().Foreground(colDim)
-	panelBorder  = lipgloss.RoundedBorder()
+	stBarEmpty   = lipgloss.NewStyle().Foreground(colBarEmpty)
+	panelBorder  = lipgloss.ThickBorder()
 )
+
+// spinnerFrames is the Braille animation shown in the footer while a search runs.
+var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const repoURL = "https://github.com/bytestrix/vanityrig"
 
@@ -122,6 +128,11 @@ type Setup struct {
 
 	startedAt    time.Time // when the current/most recent search started, for Session Info
 	speedHistory []float64 // recent KeysPerSec samples, for the Speed History sparkline
+
+	// UI state for scroll and animation.
+	spinTick int // incremented each tick to drive the Braille spinner
+	viewport viewport.Model
+	vpReady  bool // true once the first WindowSizeMsg has been processed
 }
 
 // logLevel filters which log lines are shown, cycled with "v". MATCH lines
@@ -306,6 +317,24 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.width, s.height = msg.Width, msg.Height
+		// Viewport height: reserve 2 lines for the header, 1 blank spacer,
+		// 1 footer line, and 1 trailing newline = 5 lines total.
+		vpHeight := s.height - 5
+		if vpHeight < 5 {
+			vpHeight = 5
+		}
+		vpWidth := msg.Width
+		if vpWidth > 240 {
+			vpWidth = 240
+		}
+		if !s.vpReady {
+			s.viewport = viewport.New(vpWidth, vpHeight)
+			s.vpReady = true
+		} else {
+			s.viewport.Width = vpWidth
+			s.viewport.Height = vpHeight
+		}
+		s.viewport.SetContent(s.renderBody(vpWidth))
 		return s, nil
 
 	case tickMsg:
@@ -320,6 +349,17 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.appendLog("INFO", "search finished")
 			default:
 			}
+		}
+		s.spinTick++
+		if s.vpReady {
+			w := s.viewport.Width
+			if w <= 0 {
+				w = s.width
+			}
+			if w > 240 {
+				w = 240
+			}
+			s.viewport.SetContent(s.renderBody(w))
 		}
 		return s, tick()
 
@@ -436,9 +476,27 @@ func (s *Setup) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		s.logLevel = s.logLevel.next()
 		return s, nil
+
+	case "pgup", "pgdown", "ctrl+u", "ctrl+d":
+		// These scroll keys work in every phase.
+		if s.vpReady {
+			var cmd tea.Cmd
+			s.viewport, cmd = s.viewport.Update(msg)
+			return s, cmd
+		}
+		return s, nil
 	}
 
 	if s.phase != phaseSetup {
+		// In running/finished phases, ↑/↓/j/k also scroll the viewport.
+		if s.vpReady {
+			switch key {
+			case "up", "k", "down", "j":
+				var cmd tea.Cmd
+				s.viewport, cmd = s.viewport.Update(msg)
+				return s, cmd
+			}
+		}
 		return s, nil // navigation/editing only make sense before or between searches
 	}
 
@@ -467,6 +525,7 @@ func (s *Setup) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			s.percent = clampPercent(s.percent + delta)
 		}
+		s.refreshViewport()
 		return s, nil
 
 	case "enter":
@@ -478,6 +537,23 @@ func (s *Setup) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return s, nil
+}
+
+// refreshViewport re-renders the body into the viewport immediately after a
+// key event changes visible state but before the next tick fires. Without
+// this, View() would serve stale content set by the previous tick.
+func (s *Setup) refreshViewport() {
+	if !s.vpReady {
+		return
+	}
+	w := s.viewport.Width
+	if w <= 0 {
+		w = s.width
+	}
+	if w > 240 {
+		w = 240
+	}
+	s.viewport.SetContent(s.renderBody(w))
 }
 
 func (s *Setup) routeToFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -703,26 +779,44 @@ func joinRow(parts []string) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, spaced...)
 }
 
-// View renders a telemetry-first monitoring dashboard (in the spirit of
-// btop/k9s/lazydocker) rather than a settings form: Configuration is one
-// compact panel among many, and most of the screen is live search data —
-// difficulty, speed history, session stats, and matches — that stays
-// visible for the whole session, not just before starting.
+// View renders the dashboard. When the viewport is ready (after the first
+// WindowSizeMsg), all panel content is wrapped in a scrollable viewport so
+// nothing is ever clipped on a small terminal — the user can always reach
+// every panel by scrolling with pgup/pgdown or ↑/↓ (during a search).
 func (s *Setup) View() string {
 	width := s.width
 	if width <= 0 {
 		width = 100
 	}
-	// The old 140-column cap left a wide terminal mostly blank on the right
-	// — a real monitoring dashboard (btop, k9s) fills the window it's given.
-	// 240 is just a sanity ceiling for pathological inputs, not a target.
+	// 240 is a sanity ceiling; a real monitoring dashboard fills the window.
 	if width > 240 {
 		width = 240
 	}
 
+	header := s.renderHeader(width)
+	footer := s.renderFooter(width)
+
+	if s.vpReady {
+		// Header and footer are pinned outside the viewport so they remain
+		// visible at all scroll positions.
+		return header + "\n\n" + s.viewport.View() + "\n" + footer + "\n"
+	}
+	// Viewport not yet initialised (before the first WindowSizeMsg):
+	// render everything inline so the very first frame is never blank.
 	var b strings.Builder
-	b.WriteString(s.renderHeader(width))
+	b.WriteString(header)
 	b.WriteString("\n\n")
+	b.WriteString(s.renderBody(width))
+	b.WriteString(footer)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// renderBody produces all panel content between the header and footer.
+// It is called from both View() and the tickMsg/WindowSizeMsg handlers to
+// keep the viewport content current.
+func (s *Setup) renderBody(width int) string {
+	var b strings.Builder
 
 	if width >= twoColumnMinWidth {
 		// Row 1: Configuration | Resources | GPU Status
@@ -759,43 +853,48 @@ func (s *Setup) View() string {
 	}
 	b.WriteString("\n")
 
-	// Logs grows to fill whatever vertical space the terminal actually has
-	// left, instead of a fixed 8-line box floating above a wall of blank
-	// space below the footer — the single biggest gap from the reference
-	// layout, which fills the window edge to edge.
+	// Logs: expand to fill remaining space — viewport height when scrolling
+	// is active, terminal height otherwise (same behaviour as before).
 	usedLines := strings.Count(b.String(), "\n") + 1
-	const footerAndMargin = 2
-	logsMinBody := s.height - usedLines - panelOverhead - footerAndMargin
-	if logsMinBody < 3 {
-		logsMinBody = 3
+	const fixedOverhead = 2 // spacer + margin
+	ref := s.height
+	if s.vpReady {
+		ref = s.viewport.Height
+	}
+	logsMinBody := 8
+	if ref > 0 {
+		avail := ref - usedLines - panelOverhead - fixedOverhead
+		if avail > logsMinBody {
+			logsMinBody = avail
+		}
 	}
 	if logsMinBody > 200 {
-		logsMinBody = 200 // sanity ceiling; a real terminal won't ask for this
+		logsMinBody = 200
 	}
 	b.WriteString(s.renderLogs(width, logsMinBody))
 	b.WriteString("\n")
-	b.WriteString(s.renderFooter(width))
-	b.WriteString("\n")
+
 	return b.String()
 }
 
 func (s *Setup) renderHeader(width int) string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(colGood).Render("Vanity") +
+	diamond := lipgloss.NewStyle().Bold(true).Foreground(colProgress).Render("◈ ")
+	title := diamond +
+		lipgloss.NewStyle().Bold(true).Foreground(colGood).Render("Vanity") +
 		lipgloss.NewStyle().Bold(true).Foreground(colConfig).Render("Rig")
 	tagline := stLabel.Render("CPU-powered vanity address generator") + "\n" +
 		stLabel.Render("Find your dream address. Bruteforce it.")
-	left := title + "  " + strings.SplitN(tagline, "\n", 2)[0] + "\n      " + strings.SplitN(tagline, "\n", 2)[1]
+	// 8-space indent on line 2 compensates for the leading "◈ " icon (2 cols).
+	left := title + "  " + strings.SplitN(tagline, "\n", 2)[0] + "\n        " + strings.SplitN(tagline, "\n", 2)[1]
 
-	right := stLabel.Render("v"+s.version) + "\n" + stLabel.Render(repoURL)
+	verTag := lipgloss.NewStyle().Bold(true).Foreground(colConfig).Render("[v" + s.version + "]")
+	right := verTag + "\n" + stLabel.Render(repoURL)
 	rightBlock := lipgloss.NewStyle().Align(lipgloss.Right).Render(right)
 
 	leftW := lipgloss.Width(left)
 	rightW := lipgloss.Width(rightBlock)
 
-	// The version/URL aside is dropped rather than overflowed or wrapped on a
-	// terminal too narrow to fit both — same principle the rest of this
-	// dashboard uses for asides, and the only safe option here since
-	// JoinHorizontal has no truncating mode of its own.
+	// Drop the version/URL aside rather than overflowing on a narrow terminal.
 	if gap := width - leftW - rightW; gap >= 1 {
 		spacer := lipgloss.NewStyle().Width(gap).Render("")
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, spacer, rightBlock)
@@ -812,49 +911,70 @@ func (s *Setup) footer() []string {
 
 	switch s.phase {
 	case phaseRunning:
-		return []string{"s stop", "q quit", "v log level", "l clear log"}
+		return []string{"s stop", "q quit", "v log level", "l clear log", "pgup/dn scroll"}
 	case phaseFinished:
-		return []string{"s restart", "q quit", "v log level", "l clear log"}
+		return []string{"s restart", "q quit", "v log level", "l clear log", "pgup/dn scroll"}
 	default:
-		return []string{"s start", "enter edit", "q quit", "←/→ change", "↑↓/tab move", "v log level"}
+		return []string{"s start", "enter edit", "q quit", "←/→ change", "↑↓/tab move", "v log level", "pgup/dn scroll"}
 	}
 }
 
+// keyBadge renders a keyboard hint as a coloured chip: [key] description.
+// h must be in "key description" form, e.g. "s stop".
+func keyBadge(h string) string {
+	i := strings.Index(h, " ")
+	if i < 0 {
+		return stHint.Render(h)
+	}
+	key := lipgloss.NewStyle().Bold(true).Foreground(colAccent).Render("[" + h[:i] + "]")
+	return key + stHint.Render(h[i:])
+}
+
 func (s *Setup) renderFooter(width int) string {
-	status := stGood.Render("● Running…")
-	if s.phase == phaseSetup {
-		status = stLabel.Render("● Ready")
-	} else if s.finished {
+	// Animated Braille spinner while running; static indicators otherwise.
+	var status string
+	switch {
+	case s.phase == phaseSetup:
+		status = stLabel.Render("◉ Ready")
+	case s.finished:
 		status = stWarn.Render("■ Stopped")
+	default:
+		frame := spinnerFrames[s.spinTick%len(spinnerFrames)]
+		status = stGood.Render(frame + " Running")
 	}
 
-	// Add hints one at a time only while they still fit, rather than
-	// rendering the full set and hoping it happens to be short enough.
+	// Append a scroll percentage when the content extends beyond the viewport.
+	if s.vpReady && (s.viewport.YOffset > 0 || !s.viewport.AtBottom()) {
+		pct := int(s.viewport.ScrollPercent() * 100)
+		status += stLabel.Render(fmt.Sprintf("  %d%%↕", pct))
+	}
+
+	// Add hints one at a time only while they still fit.
+	// Measure each candidate using the rendered badge form so the
+	// bracket characters in [key] are counted in the width check.
 	var kept []string
-	left := "  "
+	var styledLeft string
 	for _, h := range s.footer() {
 		sep := ""
+		sepStyled := ""
 		if len(kept) > 0 {
 			sep = "  ·  "
+			sepStyled = stLabel.Render("  ·  ")
 		}
-		candidate := left + sep + h
-		if lipgloss.Width(candidate) > width {
+		badge := keyBadge(h)
+		candidate := styledLeft + sepStyled + badge
+		if lipgloss.Width("  "+candidate) > width-lipgloss.Width(status)-1 {
 			break
 		}
-		left = candidate
+		_ = sep // sep is kept for logic clarity
+		styledLeft = candidate
 		kept = append(kept, h)
 	}
-	var styledLeft string
-	for i, h := range kept {
-		if i == 0 {
-			styledLeft = "  " + stHint.Render(h)
-		} else {
-			styledLeft += stLabel.Render("  ·  ") + stHint.Render(h)
-		}
+	if styledLeft != "" {
+		styledLeft = "  " + styledLeft
 	}
 
-	// Same rule as the header: a right-aligned aside that doesn't fit gets
-	// dropped rather than pushed past the terminal's actual width.
+	// Drop the status aside rather than pushing it past the terminal's edge.
 	if gap := width - lipgloss.Width(styledLeft) - lipgloss.Width(status); gap >= 1 {
 		return styledLeft + lipgloss.NewStyle().Width(gap).Render("") + status
 	}
@@ -1008,7 +1128,7 @@ func barWidthFor(panelWidth, reserved int) int {
 func cpuRow(percent, barWidth int) string {
 	filled := int(float64(barWidth) * float64(percent) / 100)
 	bar := lipgloss.NewStyle().Foreground(colConfig).Render(strings.Repeat("█", filled)) +
-		stLabel.Render(strings.Repeat("░", barWidth-filled))
+		stBarEmpty.Render(strings.Repeat("░", barWidth-filled))
 	return fmt.Sprintf("%s  %3d%%", bar, percent)
 }
 
@@ -1025,7 +1145,7 @@ func (s *Setup) renderResources(width int, minBodyLines int) string {
 	}
 	filled := int(float64(barWidth) * float64(percent) / 100)
 	cpuBar := lipgloss.NewStyle().Foreground(colResources).Render(strings.Repeat("█", filled)) +
-		stLabel.Render(strings.Repeat("░", barWidth-filled))
+		stBarEmpty.Render(strings.Repeat("░", barWidth-filled))
 	cores := int(math.Round(float64(runtime.NumCPU()) * float64(s.percent) / 100))
 	if cores < 1 {
 		cores = 1
@@ -1272,7 +1392,7 @@ func (s *Setup) renderProgressBar(width int) string {
 	}
 	filled := int(frac * float64(barWidth))
 	bar := lipgloss.NewStyle().Foreground(colProgress).Render(strings.Repeat("█", filled)) +
-		stLabel.Render(strings.Repeat("░", barWidth-filled))
+		stBarEmpty.Render(strings.Repeat("░", barWidth-filled))
 
 	body := label + "\n" + bar + fmt.Sprintf("  %3.0f%%", frac*100)
 	return panel("◆ Progress", width, 0, body, colProgress)

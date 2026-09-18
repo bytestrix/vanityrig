@@ -27,21 +27,21 @@ import (
 const refreshRate = 500 * time.Millisecond
 
 var (
-	colAccent = lipgloss.AdaptiveColor{Light: "#5a3fc0", Dark: "#a78bfa"}
-	colDim    = lipgloss.AdaptiveColor{Light: "#6b6b7b", Dark: "#8b849e"}
-	colGood   = lipgloss.AdaptiveColor{Light: "#136c3a", Dark: "#4ade80"}
-	colWarn   = lipgloss.AdaptiveColor{Light: "#8a5a00", Dark: "#fbbf24"}
-	colErr    = lipgloss.AdaptiveColor{Light: "#a01b1b", Dark: "#f87171"}
+	colAccent = lipgloss.AdaptiveColor{Light: "#6d28d9", Dark: "#a78bfa"}
+	colDim    = lipgloss.AdaptiveColor{Light: "#475569", Dark: "#64748b"}
+	colGood   = lipgloss.AdaptiveColor{Light: "#065f46", Dark: "#4ade80"}
+	colWarn   = lipgloss.AdaptiveColor{Light: "#92400e", Dark: "#fbbf24"}
+	colErr    = lipgloss.AdaptiveColor{Light: "#991b1b", Dark: "#f87171"}
 
 	stTitle    = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
 	stLabel    = lipgloss.NewStyle().Foreground(colDim)
-	stValue    = lipgloss.NewStyle().Bold(true)
+	stValue    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#f1f5f9"})
 	stGood     = lipgloss.NewStyle().Bold(true).Foreground(colGood)
-	stWarn     = lipgloss.NewStyle().Foreground(colWarn)
-	stErr      = lipgloss.NewStyle().Foreground(colErr)
+	stWarn     = lipgloss.NewStyle().Bold(true).Foreground(colWarn)
+	stErr      = lipgloss.NewStyle().Bold(true).Foreground(colErr)
 	stHint     = lipgloss.NewStyle().Foreground(colDim)
 	stMatchBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
+			Border(lipgloss.ThickBorder()).
 			BorderForeground(colGood).
 			Padding(0, 1)
 )
@@ -298,7 +298,7 @@ func progressBar(frac float64, width, labelWidth int) string {
 	}
 	filled := int(frac * float64(width))
 	bar := lipgloss.NewStyle().Foreground(colAccent).Render(strings.Repeat("█", filled)) +
-		stLabel.Render(strings.Repeat("░", width-filled))
+		stBarEmpty.Render(strings.Repeat("░", width-filled))
 	return "  " + stLabel.Render(pad("", labelWidth)) + bar + "\n"
 }
 
