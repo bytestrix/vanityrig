@@ -119,6 +119,9 @@ type Setup struct {
 	lastStatLog   time.Time
 	matchesLogged int
 	errorsLogged  int
+
+	startedAt    time.Time // when the current/most recent search started, for Session Info
+	speedHistory []float64 // recent KeysPerSec samples, for the Speed History sparkline
 }
 
 // logLevel filters which log lines are shown, cycled with "v". MATCH lines
@@ -232,6 +235,25 @@ func NewSetup(cfg SetupConfig) *Setup {
 	return s
 }
 
+// abbreviateHome shortens a path under the user's home directory to a "~/"
+// form for display — the Configuration column is narrow by design (most of
+// the screen is telemetry, not settings), so the full expanded path easily
+// overflowed it. The functional value (what's actually passed to the
+// runner) is untouched; this only affects what's shown on screen.
+func abbreviateHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
 func defaultOutputDirHint() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -290,6 +312,7 @@ func (s *Setup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.phase == phaseRunning {
 			s.snap = s.run.Snapshot()
 			s.logProgress()
+			s.recordSpeedSample()
 			select {
 			case <-s.run.Done():
 				s.finished = true
@@ -569,6 +592,8 @@ func (s *Setup) tryStart() (tea.Model, tea.Cmd) {
 	s.blurCurrent()
 	s.run = r
 	s.phase = phaseRunning
+	s.startedAt = time.Now()
+	s.speedHistory = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go func() { _ = r.Run(ctx) }()
@@ -579,6 +604,17 @@ func (s *Setup) tryStart() (tea.Model, tea.Cmd) {
 	s.appendLog("INFO", "output folder: "+outDir)
 	s.appendLog("INFO", "starting key generation…")
 	return s, nil
+}
+
+// recordSpeedSample keeps a rolling window of real observed throughput for
+// the Speed History sparkline — the same KeysPerSec the Statistics panel
+// already shows, just kept over time instead of only the latest reading.
+func (s *Setup) recordSpeedSample() {
+	const maxSamples = 120
+	s.speedHistory = append(s.speedHistory, s.snap.KeysPerSec)
+	if len(s.speedHistory) > maxSamples {
+		s.speedHistory = s.speedHistory[len(s.speedHistory)-maxSamples:]
+	}
 }
 
 // logProgress appends a periodic throughput line and an immediate line for
@@ -630,6 +666,48 @@ func (s *Setup) Snapshot() (runner.Snapshot, bool) {
 	return s.run.Snapshot(), true
 }
 
+const panelOverhead = 3 // top border + title line + bottom border
+
+// alignRow renders a row of same-height panels: each renderer runs once to
+// measure its natural height, then any that came out shorter than the
+// tallest are re-rendered padded to match — so a row's bottom borders line
+// up instead of the shortest box trailing off into blank space beside a
+// taller neighbor.
+func alignRow(widths []int, renderers ...func(width, minBodyLines int) string) []string {
+	rendered := make([]string, len(renderers))
+	lineCounts := make([]int, len(renderers))
+	maxLines := 0
+	for i, r := range renderers {
+		rendered[i] = r(widths[i], 0)
+		lineCounts[i] = strings.Count(rendered[i], "\n") + 1
+		if lineCounts[i] > maxLines {
+			maxLines = lineCounts[i]
+		}
+	}
+	for i, r := range renderers {
+		if lineCounts[i] < maxLines {
+			rendered[i] = r(widths[i], maxLines-panelOverhead)
+		}
+	}
+	return rendered
+}
+
+func joinRow(parts []string) string {
+	spaced := make([]string, 0, len(parts)*2-1)
+	for i, p := range parts {
+		if i > 0 {
+			spaced = append(spaced, " ")
+		}
+		spaced = append(spaced, p)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, spaced...)
+}
+
+// View renders a telemetry-first monitoring dashboard (in the spirit of
+// btop/k9s/lazydocker) rather than a settings form: Configuration is one
+// compact panel among many, and most of the screen is live search data —
+// difficulty, speed history, session stats, and matches — that stays
+// visible for the whole session, not just before starting.
 func (s *Setup) View() string {
 	width := s.width
 	if width <= 0 {
@@ -646,53 +724,38 @@ func (s *Setup) View() string {
 	b.WriteString(s.renderHeader(width))
 	b.WriteString("\n\n")
 
-	const panelOverhead = 3 // top border + title line + bottom border
-
 	if width >= twoColumnMinWidth {
-		// Row 1: Configuration | Statistics — a dense monitoring-dashboard
-		// grid (inspired by btop/k9s/lazygit) rather than a settings form,
-		// so config and live metrics sit side by side from the first frame.
-		leftW := width*58/100 - 1
-		rightW := width - width*58/100
-		stats := s.renderStats(rightW, 0)
-		statsLines := strings.Count(stats, "\n") + 1
-		config := s.renderConfig(leftW, statsLines-panelOverhead)
-		// A word/mode change can make Configuration the taller of the two
-		// (e.g. the inline error line) — re-render Statistics padded to
-		// match rather than assuming Configuration is always the shorter.
-		configLines := strings.Count(config, "\n") + 1
-		if configLines > statsLines {
-			stats = s.renderStats(rightW, configLines-panelOverhead)
-		}
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, config, " ", stats))
+		// Row 1: Configuration | Resources | GPU Status
+		w1 := width*34/100 - 1
+		w2 := width*33/100 - 1
+		w3 := width - w1 - w2 - 2
+		b.WriteString(joinRow(alignRow([]int{w1, w2, w3}, s.renderConfig, s.renderResources, s.renderGPUStatus)))
 		b.WriteString("\n")
 
 		b.WriteString(s.renderProgressBar(width))
 		b.WriteString("\n")
 
-		// Row 2: Resources | GPU Status
-		halfW := width/2 - 1
-		resources := s.renderResources(halfW, 0)
-		gpu := s.renderGPUStatus(width-halfW-1, 0)
-		resLines := strings.Count(resources, "\n") + 1
-		gpuLines := strings.Count(gpu, "\n") + 1
-		rowLines := resLines
-		if gpuLines > rowLines {
-			rowLines = gpuLines
-		}
-		resources = s.renderResources(halfW, rowLines-panelOverhead)
-		gpu = s.renderGPUStatus(width-halfW-1, rowLines-panelOverhead)
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, resources, " ", gpu))
+		// Row 2: Difficulty Analysis | Speed History | Session Info
+		b.WriteString(joinRow(alignRow([]int{w1, w2, w3}, s.renderDifficulty, s.renderSpeedHistory, s.renderSessionInfo)))
+		b.WriteString("\n")
+
+		b.WriteString(s.renderMatches(width, 0))
 	} else {
 		b.WriteString(s.renderConfig(width, 0))
-		b.WriteString("\n")
-		b.WriteString(s.renderStats(width, 0))
-		b.WriteString("\n")
-		b.WriteString(s.renderProgressBar(width))
 		b.WriteString("\n")
 		b.WriteString(s.renderResources(width, 0))
 		b.WriteString("\n")
 		b.WriteString(s.renderGPUStatus(width, 0))
+		b.WriteString("\n")
+		b.WriteString(s.renderProgressBar(width))
+		b.WriteString("\n")
+		b.WriteString(s.renderDifficulty(width, 0))
+		b.WriteString("\n")
+		b.WriteString(s.renderSpeedHistory(width, 0))
+		b.WriteString("\n")
+		b.WriteString(s.renderSessionInfo(width, 0))
+		b.WriteString("\n")
+		b.WriteString(s.renderMatches(width, 0))
 	}
 	b.WriteString("\n")
 
@@ -836,10 +899,15 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	// textinput's placeholder renders as a single character when Width is
 	// left at its zero value — despite the docs saying 0 means "unlimited" —
 	// so it must be set explicitly, and reset on every render to track the
-	// panel's actual available width rather than a guessed constant.
-	fieldWidth := width - 20
-	if fieldWidth < 10 {
-		fieldWidth = 10
+	// panel's actual available width rather than a guessed constant. Each
+	// row is "  " + label(14) + " " + value inside a panel whose usable
+	// text width is width-6 (border+padding, see panel()) — so the value's
+	// own budget is width-6-17. Getting this wrong is exactly what made the
+	// Save-to/CPU-share rows silently wrap once Configuration became a
+	// narrower column by design.
+	fieldWidth := width - 23
+	if fieldWidth < 6 {
+		fieldWidth = 6
 	}
 	s.word.Width = fieldWidth
 	s.outDir.Width = fieldWidth
@@ -858,27 +926,29 @@ func (s *Setup) renderConfig(width, minBodyLines int) string {
 	case wordEditing:
 		wordView = s.word.View()
 	case s.word.Value() != "":
-		wordView = stValue.Render(strings.Join(s.patterns(), ", "))
+		wordView = stValue.Render(truncateTo(strings.Join(s.patterns(), ", "), fieldWidth))
 	default:
-		wordView = stLabel.Render(s.word.Placeholder)
+		wordView = stLabel.Render(truncateTo(s.word.Placeholder, fieldWidth))
 	}
 
 	var outView string
 	if outEditing {
 		outView = s.outDir.View()
 	} else {
-		out := s.outDir.Value()
+		out := abbreviateHome(s.outDir.Value())
 		if out == "" {
-			out = defaultOutputDirHint()
+			out = abbreviateHome(defaultOutputDirHint())
 		}
-		outView = stValue.Render(out)
+		outView = stValue.Render(truncateTo(out, fieldWidth))
 	}
 
 	var b strings.Builder
 	b.WriteString(row("Word(s)", wordView, s.focus == fieldWord))
 	b.WriteString(row("Save to", outView, s.focus == fieldOutDir))
 	b.WriteString(row("Match mode", modeRow(s.mode, s.focus == fieldMode && editable), s.focus == fieldMode))
-	b.WriteString(row("CPU share", cpuRow(s.percent, barWidthFor(fieldWidth)), s.focus == fieldThreads))
+	// Row is "  " + label(14) + " " + bar + "  " + "100%" — 17 chars of
+	// fixed prefix plus 6 of fixed suffix around the bar itself.
+	b.WriteString(row("CPU share", cpuRow(s.percent, barWidthFor(width, 17+6)), s.focus == fieldThreads))
 
 	if s.startErr != "" {
 		b.WriteString("\n  " + stErr.Render("! "+s.startErr))
@@ -912,17 +982,21 @@ func capitalize(s string) string {
 	return string(r)
 }
 
-// barWidthFor scales a bar to the room actually available instead of a
-// fixed 14 columns, so a wide panel gets a wide bar rather than a short one
-// floating in blank space — clamped so it never goes illegibly short or
-// absurdly long.
-func barWidthFor(avail int) int {
-	w := avail - 8 // room for "  100%" beside it
-	if w < 14 {
-		return 14
+// barWidthFor scales a bar to the room actually available in a panel of
+// panelWidth columns, instead of a fixed 14 columns, so a wide panel gets a
+// wide bar rather than a short one floating in blank space. reserved is
+// every other character on the bar's row (label, indent, spacing, the
+// percentage text) — panelWidth-6 is the panel's usable text width (border
+// and padding already subtracted; see panel()). Clamped so the bar never
+// goes illegibly short, and — the actual bug this replaced — never claims
+// more width than the row has left and wraps onto a second line.
+func barWidthFor(panelWidth, reserved int) int {
+	w := panelWidth - 6 - reserved
+	if w < 4 {
+		w = 4
 	}
 	if w > 60 {
-		return 60
+		w = 60
 	}
 	return w
 }
@@ -942,7 +1016,9 @@ func cpuRow(percent, barWidth int) string {
 // kernel exposes one, a real measured package temperature — never invented
 // OS telemetry for anything this can't actually read.
 func (s *Setup) renderResources(width int, minBodyLines int) string {
-	barWidth := barWidthFor(width - 4 - 6) // panel padding + "CPU  " label
+	// Row is "  " + "CPU " (padded to 4) + " " + bar + "  " + "100%" — 7
+	// chars of fixed prefix plus 6 of fixed suffix around the bar itself.
+	barWidth := barWidthFor(width, 7+6)
 	percent := s.percent
 	if s.phase == phaseSetup {
 		percent = 0 // nothing is actually running yet
@@ -986,67 +1062,158 @@ func (s *Setup) renderGPUStatus(width int, minBodyLines int) string {
 	return panel("🖥 GPU Status", width, minBodyLines, b.String(), colResources)
 }
 
-func (s *Setup) renderStats(width, minBodyLines int) string {
-	if s.phase == phaseSetup {
-		return panel("📈 Statistics", width, minBodyLines, s.renderPreview(), colStats)
-	}
-	return panel("📈 Statistics", width, minBodyLines, s.renderLiveStats(), colStats)
-}
-
-// renderPreview shows the same prefix/suffix/anywhere cost comparison the
-// non-interactive -check output prints, live-updated as the word changes,
-// so the configuration panel's mode selector isn't a blind choice.
-func (s *Setup) renderPreview() string {
+// renderDifficulty is the same prefix/suffix/anywhere cost comparison the
+// non-interactive -check output prints, live-updated as the word or mode
+// changes. Unlike the old Statistics panel, it stays visible for the whole
+// session (not just before starting) — this is telemetry a search is
+// actually evaluated against, not a setup-time-only preview.
+func (s *Setup) renderDifficulty(width, minBodyLines int) string {
 	pats := s.patterns()
-	if len(pats) == 0 {
-		return stLabel.Render("Type a word to see cost\nestimates for each mode.")
-	}
-	cmp := vanity.CompareModes(pats, s.effectiveRate())
-
-	var b strings.Builder
-	for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
-		e := cmp.Estimates[m]
-		timing := humanDur(e.P50)
-		bits := fmt.Sprintf("2^%.0f", e.Bits)
-		note := ""
-		switch {
-		case e.Probability <= 0:
-			timing = "impossible"
-			bits = ""
-		case m == cmp.Best:
-			note = stGood.Render("← best")
+	var body string
+	switch {
+	case len(pats) == 0:
+		body = stLabel.Render("Type a word to see cost\nestimates for each mode.")
+	default:
+		cmp := vanity.CompareModes(pats, s.effectiveRate())
+		var b strings.Builder
+		// The newline must stay outside Render(): lipgloss's Style.Render
+		// treats a trailing "\n" in its input as an extra empty styled
+		// segment rather than a plain line break, which glued the next
+		// row directly onto the end of this header instead of starting a
+		// new line — a real rendering bug, not just a cosmetic one.
+		b.WriteString(stLabel.Render(fmt.Sprintf("  %-10s %-12s %s", "Mode", "Est. Time", "Complexity")))
+		b.WriteString("\n")
+		for _, m := range []vanity.MatchMode{vanity.MatchPrefix, vanity.MatchSuffix, vanity.MatchAnywhere} {
+			e := cmp.Estimates[m]
+			timing := humanDur(e.P50)
+			bits := fmt.Sprintf("2^%.0f", e.Bits)
+			note := ""
+			switch {
+			case e.Probability <= 0:
+				timing = "impossible"
+				bits = ""
+			case m == cmp.Best:
+				note = stGood.Render("← best")
+			}
+			marker := "  "
+			if m == s.mode {
+				marker = stFocused.Render("▸ ")
+			}
+			b.WriteString(fmt.Sprintf("%s%-10s %-12s %-9s %s\n", marker, m, timing, bits, note))
 		}
-		marker := "  "
-		if m == s.mode {
-			marker = stFocused.Render("▸ ")
-		}
-		b.WriteString(fmt.Sprintf("%s%-10s %-12s %-7s %s\n", marker, m, timing, bits, note))
+		body = strings.TrimRight(b.String(), "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return panel("Σ Difficulty Analysis", width, minBodyLines, body, colStats)
 }
 
-func (s *Setup) renderLiveStats() string {
-	snap := s.snap
-	labelWidth := 15
-
-	eta := "—"
-	if snap.Estimate.Probability > 0 && snap.KeysPerSec > 0 && !vanity.Saturated(snap.Estimate.P50) {
-		eta = humanDur(snap.Estimate.P50)
+// renderSpeedHistory is a real-data trend graph — actual observed keys/sec
+// over the current session, the same numbers Session Info's Hash Rate line
+// shows, just kept over time. It's blank (not fabricated) before a search
+// has produced any samples.
+func (s *Setup) renderSpeedHistory(width, minBodyLines int) string {
+	// The panel's usable text width is width-6 (border+padding, see
+	// panel()), not width-4 — a sparkline sized to width-4 was 2 columns
+	// too wide for its own box, which made lipgloss word-wrap the overflow
+	// onto a spurious extra line instead of the sparkline just looking
+	// slightly wider than intended.
+	barWidth := width - 6
+	if barWidth < 10 {
+		barWidth = 10
 	}
 
-	difficulty := "—"
-	if !math.IsInf(snap.Estimate.Bits, 1) {
-		difficulty = fmt.Sprintf("2^%.1f", snap.Estimate.Bits)
+	var body string
+	if len(s.speedHistory) == 0 {
+		body = stLabel.Render("No samples yet — starts once a search is running.")
+	} else {
+		var cur, max, sum float64
+		for _, v := range s.speedHistory {
+			sum += v
+			if v > max {
+				max = v
+			}
+		}
+		cur = s.speedHistory[len(s.speedHistory)-1]
+		avg := sum / float64(len(s.speedHistory))
+
+		graph := lipgloss.NewStyle().Foreground(colProgress).Render(sparkline(s.speedHistory, barWidth))
+		// Built and truncated as plain text, then styled once — truncating
+		// text that's already been through rate() (which embeds its own
+		// ANSI codes for "/sec") would cut mid-escape-sequence.
+		plainStats := fmt.Sprintf("cur %s/sec  ·  avg %s/sec  ·  max %s/sec",
+			humanCount(cur), humanCount(avg), humanCount(max))
+		body = graph + "\n" + stLabel.Render(truncateTo(plainStats, width-6))
+	}
+	return panel("📈 Speed History", width, minBodyLines, body, colStats)
+}
+
+// renderSessionInfo summarizes the current/most recent run — real data
+// only: no fabricated "current candidate" address or key material, since a
+// batched parallel engine has no single "current" candidate and showing
+// key material on screen (even a discarded one) is bad practice for a
+// security tool.
+func (s *Setup) renderSessionInfo(width, minBodyLines int) string {
+	labelWidth := 12
+	started := "—"
+	if !s.startedAt.IsZero() {
+		started = s.startedAt.Format("15:04:05")
+	}
+	status := "ready"
+	switch {
+	case s.phase == phaseRunning:
+		status = "running"
+	case s.finished:
+		status = "stopped"
+	}
+	outDir := s.outDir.Value()
+	if outDir == "" {
+		outDir = defaultOutputDirHint()
 	}
 
 	var b strings.Builder
-	b.WriteString(row2("Difficulty", difficulty, labelWidth))
-	b.WriteString(row2("Keys Tested", humanCount(snap.KeysTried), labelWidth))
-	b.WriteString(row2("Hash Rate", rate(snap.KeysPerSec), labelWidth))
-	b.WriteString(row2("Elapsed", roughElapsed(snap.SessionTime), labelWidth))
-	b.WriteString(row2("Est. Time (50%)", eta, labelWidth))
-	b.WriteString(row2("Matches Found", fmt.Sprintf("%d", len(snap.Matches)), labelWidth))
-	return strings.TrimRight(b.String(), "\n")
+	b.WriteString(row2("Started At", started, labelWidth))
+	b.WriteString(row2("Runtime", roughElapsed(s.snap.SessionTime), labelWidth))
+	b.WriteString(row2("Keys Tested", humanCount(s.snap.KeysTried), labelWidth))
+	b.WriteString(row2("Output Dir", truncateTo(outDir, width-4-labelWidth-2), labelWidth))
+	b.WriteString(row2("Status", status, labelWidth))
+	return panel("ℹ Session Info", width, minBodyLines, strings.TrimRight(b.String(), "\n"), colStats)
+}
+
+// renderMatches is a real, honest match table: address and when it was
+// found, never the private key — displaying key material on screen (even a
+// match you already intend to keep) is bad practice for a security tool,
+// and the dashboard already says where the real files are saved.
+func (s *Setup) renderMatches(width, minBodyLines int) string {
+	// A fixed, small window onto the most recent matches — a search for a
+	// short/common word can find thousands of them, and a table that grows
+	// with the count would swallow the rest of the dashboard (Logs
+	// included). Every match is still on disk and in matches.txt/.csv
+	// regardless of how many fit here.
+	const shown = 6
+	matches := s.snap.Matches
+
+	var body string
+	if len(matches) == 0 {
+		body = stLabel.Render("No matches yet.")
+	} else {
+		recent := matches
+		if len(recent) > shown {
+			recent = recent[len(recent)-shown:]
+		}
+		var b strings.Builder
+		b.WriteString(stLabel.Render(fmt.Sprintf("  %-56s %s", "Address", "Found At")))
+		b.WriteString("\n")
+		for _, m := range recent {
+			b.WriteString(fmt.Sprintf("  %s %s\n",
+				stValue.Render(m.Address+".onion"), stLabel.Render(m.FoundAt.Format("15:04:05"))))
+		}
+		if hidden := len(matches) - len(recent); hidden > 0 {
+			b.WriteString(stLabel.Render(fmt.Sprintf("  … and %d more — see matches.txt / matches.csv", hidden)))
+			b.WriteString("\n")
+		}
+		body = strings.TrimRight(b.String(), "\n")
+	}
+	title := fmt.Sprintf("🏆 Matches Found (%d)", len(matches))
+	return panel(title, width, minBodyLines, body, colGood)
 }
 
 func roughElapsed(d time.Duration) string {

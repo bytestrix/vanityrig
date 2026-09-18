@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/bytestrix/vanityrig/internal/runner"
 	"github.com/bytestrix/vanityrig/internal/vanity"
 )
 
@@ -54,7 +56,8 @@ func TestBothPanelsVisibleOnFirstFrame(t *testing.T) {
 	out := s.View()
 
 	for _, want := range []string{
-		"Configuration", "Resources", "Statistics", "Progress", "Logs",
+		"Configuration", "Resources", "Difficulty Analysis", "Speed History",
+		"Session Info", "Matches Found", "Progress", "Logs",
 		"Word(s)", "Save to", "Match mode", "CPU share", "GPU",
 	} {
 		if !strings.Contains(out, want) {
@@ -482,6 +485,30 @@ func TestDifficultyIsShownInStatistics(t *testing.T) {
 	}
 }
 
+// Regression test: passing a string with a trailing "\n" into a lipgloss
+// Style.Render call (rather than adding the newline outside it) silently
+// glues the next line onto the same row instead of starting a new one —
+// found via visual pty verification, where the Difficulty Analysis header
+// row and the "prefix" data row underneath it ended up concatenated on one
+// very long line. Each mode name must appear on its own line.
+func TestDifficultyAnalysisRowsDoNotRunTogether(t *testing.T) {
+	s := NewSetup(SetupConfig{Words: []string{"s"}})
+	s.Update(tea.WindowSizeMsg{Width: 190, Height: 40})
+
+	out := s.View()
+	for _, line := range strings.Split(out, "\n") {
+		count := 0
+		for _, mode := range []string{"prefix", "suffix", "anywhere"} {
+			if strings.Contains(line, mode) {
+				count++
+			}
+		}
+		if count > 1 {
+			t.Errorf("more than one mode name landed on the same line (rows ran together): %q", line)
+		}
+	}
+}
+
 // Regression test: the Progress panel used to say only "impossible in this
 // mode" for an unsatisfiable pattern+mode combination, with no explanation —
 // reported directly by a user screenshot. It must show the actual rule the
@@ -517,6 +544,110 @@ func TestGPUStatusPanelIsHonestAboutNotExisting(t *testing.T) {
 	for _, fake := range []string{"NVIDIA", "RTX", "CUDA 12", "%GPU"} {
 		if strings.Contains(out, fake) {
 			t.Errorf("must not show a fabricated GPU detail %q:\n%s", fake, out)
+		}
+	}
+}
+
+// The Speed History sparkline and Session Info panel must be driven by real
+// observed throughput, not placeholders — this drives an actual (fast,
+// prefix "ab") search and checks a real sample lands in speedHistory and
+// that Session Info reflects the running state.
+func TestSpeedHistoryAndSessionInfoShowRealData(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	typeText(s, "ab")
+	press(s, "enter", "tab")
+	typeText(s, t.TempDir())
+	press(s, "enter")
+	press(s, "s")
+
+	if s.phase != phaseRunning {
+		t.Fatal("expected the search to start")
+	}
+
+	deadline := time.After(10 * time.Second)
+	for len(s.speedHistory) == 0 || s.speedHistory[len(s.speedHistory)-1] <= 0 {
+		s.Update(tickMsg(time.Now()))
+		select {
+		case <-deadline:
+			t.Fatal("no throughput sample arrived in time")
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	out := s.View()
+	if !strings.Contains(out, "Session Info") {
+		t.Errorf("expected a Session Info panel:\n%s", out)
+	}
+	if !strings.Contains(out, "running") {
+		t.Errorf("expected Session Info to report the running status:\n%s", out)
+	}
+	if !strings.Contains(out, "Speed History") {
+		t.Errorf("expected a Speed History panel:\n%s", out)
+	}
+
+	// Cancel and wait for the engine to fully stop before the test ends and
+	// t.TempDir's cleanup runs — otherwise the engine can still be writing
+	// when cleanup starts, an intermittent "directory not empty" already
+	// documented elsewhere in this package.
+	s.cancel()
+	waitDeadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-s.run.Done():
+			return
+		case <-waitDeadline:
+			t.Fatal("search did not stop after cancel")
+		default:
+			s.Update(tickMsg(time.Now()))
+		}
+	}
+}
+
+// Regression test: a search for a short/common word can find thousands of
+// matches, and the Matches Found table used to render every single one —
+// found via visual pty verification, where it grew to fill (and push the
+// Logs panel off) the whole screen. It must show a small, fixed window of
+// the most recent matches and say how many more exist.
+func TestMatchesTableIsCappedNotUnbounded(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	for i := 0; i < 500; i++ {
+		s.snap.Matches = append(s.snap.Matches, runner.Match{
+			Address: "match" + fmt.Sprint(i),
+			FoundAt: time.Now(),
+		})
+	}
+
+	out := s.renderMatches(140, 0)
+	lines := strings.Count(out, "\n") + 1
+	if lines > 15 {
+		t.Errorf("Matches Found rendered %d lines for 500 matches — should be capped to a small window, got:\n%s", lines, out)
+	}
+	if !strings.Contains(out, "more") {
+		t.Errorf("expected a note about how many matches aren't shown:\n%s", out)
+	}
+	if !strings.Contains(out, "Matches Found (500)") {
+		t.Errorf("expected the panel title to still show the true total count:\n%s", out)
+	}
+}
+
+// Regression test: sizing a panel's inner content (here, the Speed History
+// sparkline) to width-4 instead of the true usable text width (width-6,
+// after border+padding — see panel()) made the content exactly as wide as
+// the box, which lipgloss word-wrapped into a spurious extra blank line
+// instead of rendering as one line — found via visual pty verification,
+// where it threw Speed History's row out of alignment with its neighbors.
+func TestSpeedHistoryDoesNotWrapOntoExtraLine(t *testing.T) {
+	s := NewSetup(SetupConfig{})
+	s.phase = phaseRunning
+	s.speedHistory = []float64{100, 200, 300, 150, 900, 400}
+
+	for _, width := range []int{40, 55, 59, 80, 120} {
+		out := s.renderSpeedHistory(width, 0)
+		lines := strings.Count(out, "\n") + 1
+		if lines != 5 {
+			t.Errorf("width %d: expected exactly 5 lines (border+title+graph+stats+border), got %d:\n%s", width, lines, out)
 		}
 	}
 }

@@ -197,7 +197,12 @@ func (m Model) View() string {
 	// Findings — the reason anyone is watching this screen.
 	b.WriteString("\n")
 	if len(s.Matches) == 0 {
-		b.WriteString(stLabel.Render("  no matches yet\n"))
+		// The newline must stay outside Render(): a trailing "\n" inside
+		// lipgloss's Style.Render input becomes an extra empty styled
+		// segment rather than a plain line break, gluing whatever's
+		// written next onto the same visual line.
+		b.WriteString(stLabel.Render("  no matches yet"))
+		b.WriteString("\n")
 	} else {
 		var lines []string
 		lines = append(lines, stGood.Render(fmt.Sprintf("FOUND %d", len(s.Matches))))
@@ -369,6 +374,57 @@ func cpuTempC() (float64, bool) {
 		return milli / 1000, true
 	}
 	return 0, false
+}
+
+var sparkGlyphs = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// sparkline renders values as a trend strip, most recent sample on the
+// right — the same shape btop/k9s-style dashboards use for a history
+// graph. It shows trend, not exact values, so callers should pair it with
+// current/min/max text rather than relying on it alone. Values are scaled
+// against their own min/max (not a fixed axis) so a quiet search's much
+// smaller numbers still show visible motion instead of a flat line.
+func sparkline(values []float64, width int) string {
+	if width < 1 {
+		return ""
+	}
+	v := values
+	if len(v) > width {
+		v = v[len(v)-width:]
+	}
+	pad := width - len(v)
+
+	var lo, hi float64
+	if len(v) > 0 {
+		lo, hi = v[0], v[0]
+		for _, x := range v {
+			if x < lo {
+				lo = x
+			}
+			if x > hi {
+				hi = x
+			}
+		}
+	}
+
+	var b strings.Builder
+	for i := 0; i < pad; i++ {
+		b.WriteRune(' ')
+	}
+	for _, x := range v {
+		idx := 0
+		if hi > lo {
+			idx = int((x - lo) / (hi - lo) * float64(len(sparkGlyphs)-1))
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(sparkGlyphs) {
+			idx = len(sparkGlyphs) - 1
+		}
+		b.WriteRune(sparkGlyphs[idx])
+	}
+	return b.String()
 }
 
 // expNeg is exp(-x), clamped so an enormous exponent cannot produce a NaN or a
