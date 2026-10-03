@@ -211,7 +211,7 @@ input.
 | Live dashboard | ✅ | ❌ |
 | Resume after stop | ✅ | ❌ |
 | Prefix speed per core | ~8x slower (built-in engine) | fastest |
-| GPU | not yet ([#roadmap](https://github.com/bytestrix/vanityrig/issues)) | ❌ |
+| GPU | not yet ([#2](https://github.com/bytestrix/vanityrig/issues/2)) | ❌ |
 
 VanityRig isn't trying to replace `mkp224o` — it drives it for prefix
 searches when it's on your `PATH`, and fills in what it doesn't do.
