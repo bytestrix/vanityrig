@@ -13,39 +13,41 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#why-vanityrig">Why VanityRig</a> ·
+  <a href="#comparison">Comparison</a> ·
   <a href="#contributing">Contributing</a> ·
   <a href="SECURITY.md">Security</a>
 </p>
 
 ---
 
-## What is it?
+**Find a Tor v3 `.onion` address containing your word — at the start, the
+end, or anywhere — and know exactly how long it will take before you spend
+any CPU on it.**
 
-A Tor v3 `.onion` address is 56 random-looking characters. VanityRig finds
-one containing a word you choose — at the start, at the end, or anywhere in
-the middle — and tells you honestly what that will cost **before** it spends
-any CPU time on it.
+<p align="center">
+  <img src="docs/demo.gif" alt="VanityRig dashboard searching for &quot;cafe&quot; and finding matches in seconds" width="100%" />
+</p>
 
-It's built on [`mkp224o`](https://github.com/cathugger/mkp224o), the
-standard generator for this, and adds the three things that tool doesn't
-have: an accurate up-front time/cost estimate, a live progress dashboard, and
-the ability to match a word anywhere in the address rather than only at the
-start — which is often dramatically faster than people expect.
+```sh
+curl -fsSL https://raw.githubusercontent.com/bytestrix/vanityrig/main/install.sh | bash
+vanityrig
+```
 
 ---
 
 ## Quick start
 
-**1. Install**
+**1. Install** (Linux/macOS)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bytestrix/vanityrig/main/install.sh | bash
 ```
 
-Downloads the right prebuilt binary for your OS/architecture from the
-[latest release](https://github.com/bytestrix/vanityrig/releases/latest) —
-no Go toolchain required. Linux and macOS only; Windows users, grab the
-`.zip` from the releases page directly.
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/bytestrix/vanityrig/main/install.ps1 | iex
+```
 
 **2. Run it**
 
@@ -53,24 +55,29 @@ no Go toolchain required. Linux and macOS only; Windows users, grab the
 vanityrig
 ```
 
-That's it — no flags to learn. A real dashboard opens, with everything on one
-screen at once: **Configuration** (word, save location, match mode, CPU
-share), **Statistics** (live prefix/suffix/anywhere cost comparison,
-including difficulty as 2^N bits, until you start), **Progress**,
-**Resources** (CPU share and, where the kernel exposes one, real CPU
-temperature), **GPU Status** (honestly "coming soon" — there is no GPU engine
-here, so nothing here is a fabricated number), and a scrolling **Logs** panel
-with a cyclable level filter (`v`). Tab between fields, arrow keys to change a
-selection, `enter` to edit a field or start, `s` to start/stop/restart a
-search without quitting, `q` to quit — Configuration freezes in place while
-running and the rest switch to live search data, without ever leaving this
-screen.
+No flags to learn. Type a word, press `s`, and watch it search.
 
-Already know what you want? Skip the prompts with `vanityrig <word> [flags]`
-— see [Usage](#usage) below.
+| Key | Action |
+|---|---|
+| `tab` / `↑↓` | move between fields |
+| `←→` | change a selection |
+| `enter` | edit a field |
+| `s` | start / stop the search |
+| `v` | cycle the log level filter |
+| `q` | quit |
+
+Already know what you want? `vanityrig <word> [flags]` — see [Usage](#usage).
+
+Found an address? See [Using your address with Tor](docs/using-your-address.md).
 
 <details>
 <summary>Other ways to install</summary>
+
+**Homebrew (macOS/Linux):**
+
+```sh
+brew install --cask bytestrix/tap/vanityrig
+```
 
 **Debian/Ubuntu (.deb) or Fedora/RHEL (.rpm):** download the package for
 your architecture from the
@@ -88,6 +95,13 @@ sudo rpm -i vanityrig_*_linux_amd64.rpm       # Fedora/RHEL
 go install github.com/bytestrix/vanityrig/cmd/vanityrig@latest
 ```
 
+**Docker:**
+
+```sh
+docker build -t vanityrig https://github.com/bytestrix/vanityrig.git
+docker run --rm -it -v "$PWD/keys:/keys" vanityrig cafe -out /keys
+```
+
 **Build from source:**
 
 ```sh
@@ -102,7 +116,7 @@ Optional, for any install method: put
 uses it automatically for prefix searches — it's roughly 8x faster per core
 than VanityRig's own engine for that mode (measured, not estimated — see
 `internal/engine/bench_test.go`). Suffix and anywhere searches always run on
-VanityRig's built-in engine, since `mkp224o` can't do those at all.
+VanityRig's built-in engine.
 
 </details>
 
@@ -161,8 +175,7 @@ input.
 
 - **Matches anywhere in the address, not just the start.** A word has up to
   47 possible positions in a 56-character address — matching any of them is
-  often 10-50x faster than pinning it to the front. No other generator
-  supports this.
+  often 10-50x faster than pinning it to the front.
 - **Compares where the word can go, not just how long it takes.** Prefix,
   suffix, and anywhere have very different costs for the same word, so
   VanityRig checks all three and tells you which is achievable — instead of
@@ -183,6 +196,25 @@ input.
   across many candidates at once instead of paying it per key, which is
   roughly 11x faster than the straightforward version of the same engine —
   measured, not estimated.
+
+---
+
+## Comparison
+
+| | VanityRig | mkp224o |
+|---|---|---|
+| Prefix match | ✅ (uses mkp224o if installed) | ✅ |
+| Suffix match | ✅ | ❌ |
+| Match anywhere | ✅ | only via a custom `--enable-regex` build |
+| Time estimate before searching | ✅ | ❌ |
+| Detects impossible patterns | ✅ | ❌ |
+| Live dashboard | ✅ | ❌ |
+| Resume after stop | ✅ | ❌ |
+| Prefix speed per core | ~8x slower (built-in engine) | fastest |
+| GPU | not yet ([#roadmap](https://github.com/bytestrix/vanityrig/issues)) | ❌ |
+
+VanityRig isn't trying to replace `mkp224o` — it drives it for prefix
+searches when it's on your `PATH`, and fills in what it doesn't do.
 
 ---
 

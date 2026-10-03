@@ -19,7 +19,7 @@ case "$os" in
   linux|darwin) ;;
   *)
     echo "error: this script supports Linux and macOS only." >&2
-    echo "Windows: download a .zip from https://github.com/$REPO/releases/latest" >&2
+    echo "Windows: irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" >&2
     exit 1
     ;;
 esac

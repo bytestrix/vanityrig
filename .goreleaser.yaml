@@ -48,6 +48,26 @@ nfpms:
       - deb
       - rpm
 
+# Publishes to github.com/bytestrix/homebrew-tap. Skipped until that repo
+# exists and a HOMEBREW_TAP_TOKEN secret (a PAT with write access to it) is set.
+homebrew_casks:
+  - name: vanityrig
+    ids: [vanityrig]
+    homepage: https://github.com/bytestrix/vanityrig
+    description: Vanity Tor v3 .onion address finder with prefix/suffix/anywhere matching.
+    license: MIT
+    repository:
+      owner: bytestrix
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ else }}false{{ end }}'
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/vanityrig"]
+          end
+
 release:
   github:
     owner: bytestrix

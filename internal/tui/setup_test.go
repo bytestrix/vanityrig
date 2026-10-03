@@ -30,6 +30,18 @@ func key(s string) tea.KeyMsg {
 	}
 }
 
+// stopAndWait cancels a running search and waits for the runner to finish
+// writing its state, so t.TempDir cleanup never races a final save.
+func stopAndWait(t *testing.T, s *Setup) {
+	t.Helper()
+	s.cancel()
+	select {
+	case <-s.run.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner did not stop within 10s of cancel")
+	}
+}
+
 func press(s *Setup, keys ...string) {
 	for _, k := range keys {
 		s.Update(key(k))
@@ -266,7 +278,7 @@ func TestNoLineExceedsTerminalWidth(t *testing.T) {
 				}
 			}
 			if running {
-				s.cancel()
+				stopAndWait(t, s)
 			}
 		}
 	}
@@ -382,7 +394,7 @@ func TestMouseIgnoredOnceRunning(t *testing.T) {
 	if s.mode != before {
 		t.Error("clicking after the search has started must not change settings")
 	}
-	s.cancel()
+	stopAndWait(t, s)
 }
 
 // The default log level (info) hides routine STATS throughput lines but
@@ -680,5 +692,5 @@ func TestDashboardNeverShowsFabricatedData(t *testing.T) {
 			t.Errorf("dashboard must never show fabricated data %q:\n%s", f, out)
 		}
 	}
-	s.cancel()
+	stopAndWait(t, s)
 }
