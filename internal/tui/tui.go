@@ -9,14 +9,13 @@ package tui
 import (
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/shirou/gopsutil/v4/sensors"
 
 	"github.com/bytestrix/vanityrig/internal/runner"
 	"github.com/bytestrix/vanityrig/internal/vanity"
@@ -44,6 +43,22 @@ var (
 			Border(lipgloss.ThickBorder()).
 			BorderForeground(colGood).
 			Padding(0, 1)
+)
+
+// cpuSensorPrefixes lists sensor-key prefixes in order of preference so the
+// result doesn't depend on the order gopsutil returns sensors in.
+var cpuSensorPrefixes = []string{
+	"coretemp_package_id_", // Intel: whole-package temperature
+	"k10temp_tdie",         // AMD: die temperature (no offset)
+	"k10temp_tctl",         // AMD: control temperature (may include an offset)
+	"cpu_thermal",          // Raspberry Pi / many ARM boards
+	"cpu-thermal",
+	"coretemp", // Intel fallback: any per-core sensor
+}
+
+var (
+	cpuSensorMu  sync.Mutex
+	cpuSensorKey string // full SensorKey pinned on the first successful read
 )
 
 type tickMsg time.Time
@@ -285,7 +300,7 @@ func placement(m vanity.MatchMode) string {
 
 // progressBar shows the cumulative chance of success. It is explicitly not a
 // completion bar: the search can succeed at any moment or run well past the
-// bar filling, so it is labelled as odds rather than progress.
+// bar filling, so it is labeled as odds rather than progress.
 func progressBar(frac float64, width, labelWidth int) string {
 	if width < 10 {
 		width = 10
@@ -348,30 +363,62 @@ func humanDur(d time.Duration) string {
 	}
 }
 
-// cpuTempC reads the current CPU package temperature in Celsius, when the
-// kernel exposes one. Only Linux's /sys/class/thermal is read — no cgo, no
-// vendor tooling — so this reports a real measured value or honestly says
-// it can't, rather than inventing a number for platforms it can't read.
+// cpuTempC returns the CPU temperature in degrees Celsius and whether a
+// reading was available. It returns (0, false) when no value can be
+// reported, so callers must check the bool and never treat 0 as a real
+// temperature.
+//
+// Readings come from gopsutil's sensors package. On the first successful
+// call, cpuTempC searches the returned sensors in the order given by
+// cpuSensorPrefixes, takes the first one with a positive reading, and pins
+// its full SensorKey for the lifetime of the process. Every later call reads
+// only that exact sensor, so successive values always come from the same
+// source and don't jump between, say, a package sensor and a per-core one.
+//
+// If the pinned sensor is missing from a later result or reads 0, cpuTempC
+// returns (0, false) rather than falling back to a different sensor. The pin
+// is never cleared, so a sensor that disappears for good (after a driver
+// reload that renames it, for example) means no temperature until the
+// process restarts.
+//
+// It also returns (0, false) if sensors.SensorsTemperatures returns any
+// error, including warnings about individual sensors that couldn't be read,
+// or returns no sensors at all. The latter is common in virtual machines,
+// containers, and on hardware without exposed sensors. No sensor matching
+// cpuSensorPrefixes also yields (0, false), as on platforms whose CPU sensors
+// use other names.
+//
+// cpuTempC is safe for concurrent use. The pinned key is guarded by a mutex,
+// which is held only while matching in memory, not while the sensors are
+// read.
 func cpuTempC() (float64, bool) {
-	for i := 0; i < 10; i++ {
-		zone := filepath.Join("/sys/class/thermal", fmt.Sprintf("thermal_zone%d", i))
-		typeBytes, err := os.ReadFile(filepath.Join(zone, "type"))
-		if err != nil {
-			continue
+	temps, err := sensors.SensorsTemperatures()
+	if err != nil || len(temps) == 0 {
+		return 0, false
+	}
+
+	cpuSensorMu.Lock()
+	defer cpuSensorMu.Unlock()
+
+	// already pinned: read only that exact sensor. If it's missing or reads
+	// 0, report "unavailable" rather than switching to a different sensor.
+	if cpuSensorKey != "" {
+		for _, t := range temps {
+			if t.SensorKey == cpuSensorKey && t.Temperature > 0 {
+				return t.Temperature, true
+			}
 		}
-		t := strings.ToLower(strings.TrimSpace(string(typeBytes)))
-		if !strings.Contains(t, "cpu") && !strings.Contains(t, "x86_pkg_temp") && !strings.Contains(t, "soc") {
-			continue
+		return 0, false
+	}
+
+	// first successful call: choose by preference order, then pin the full key.
+	for _, prefix := range cpuSensorPrefixes {
+		for _, t := range temps {
+			if strings.HasPrefix(t.SensorKey, prefix) && t.Temperature > 0 {
+				cpuSensorKey = t.SensorKey
+				return t.Temperature, true
+			}
 		}
-		raw, err := os.ReadFile(filepath.Join(zone, "temp"))
-		if err != nil {
-			continue
-		}
-		milli, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
-		if err != nil {
-			continue
-		}
-		return milli / 1000, true
 	}
 	return 0, false
 }
