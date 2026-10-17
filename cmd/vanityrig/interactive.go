@@ -25,7 +25,7 @@ func runInteractive(patterns []string, out string, mode vanity.MatchMode, rate f
 		Rate:       rate,
 		StopAfter:  stopAfter,
 		EnginePath: enginePath,
-		Version:    version,
+		Version:    resolveVersion(),
 	})
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())

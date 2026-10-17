@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -19,9 +20,24 @@ import (
 )
 
 // version is set at build time via -ldflags "-X main.version=...". Release
-// binaries get their real tag; anything built with plain `go build` or
-// `go install` stays "dev" rather than lying about which release it is.
+// binaries get their real tag. Plain `go install ...@vX.Y.Z` leaves this as
+// "dev"; resolveVersion then falls back to module build info.
 var version = "dev"
+
+func resolveVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		return version
+	}
+	v := info.Main.Version
+	if v == "" || v == "(devel)" {
+		return version
+	}
+	return v
+}
 
 const usage = `vanityrig - find a vanity .onion address
 
@@ -79,7 +95,7 @@ func run(args []string) int {
 		return 0
 	}
 	if args[0] == "-version" || args[0] == "--version" {
-		fmt.Println("vanityrig", version)
+		fmt.Println("vanityrig", resolveVersion())
 		return 0
 	}
 
